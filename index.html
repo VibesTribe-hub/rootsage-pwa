@@ -1,0 +1,904 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RootSage Plant Identifier (PWA)</title>
+    <!-- PWA Requirements: Define how the app should look on a home screen -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <meta name="theme-color" content="#10b981">
+    
+    <!-- Load Tailwind CSS, React, ReactDOM, and Babel -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <!-- Babel is needed to compile JSX in the browser for this single-file setup -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Firebase SDK Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, collection, query, onSnapshot, setDoc, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        window.firebaseImports = { initializeApp, getAuth, signInAnonymously, getFirestore, doc, collection, query, onSnapshot, setDoc, addDoc, serverTimestamp };
+    </script>
+
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f7f9fb;
+            display: flex;
+            justify-content: center;
+        }
+        /* Mobile frame styling */
+        .mobile-frame {
+            min-height: 100vh;
+            width: 100%;
+            max-width: 420px; /* Standard mobile width limit */
+            background-color: white;
+            box-shadow: 0 0 30px rgba(0, 0, 0, 0.2);
+        }
+    </style>
+</head>
+<body>
+    <div id="root" class="mobile-frame"></div>
+
+    <script type="text/babel">
+        const { useState, useCallback, useEffect } = React;
+        const { initializeApp, getAuth, signInAnonymously, getFirestore, doc, collection, query, onSnapshot, setDoc, addDoc, serverTimestamp } = window.firebaseImports;
+               
+        const firebaseConfig = {
+            apiKey: "AIzaSyBMoKi_lHpD-bm3lLuVOQo1TQmzm6ztmOcY",
+            authDomain: "rootsage-93b81.firebaseapp.com",
+            projectId: "rootsage-93b81",
+            storageBucket: "rootsage-93b81.firebasestorage.app",
+            messagingSenderId: "1030097757643",
+            appId: "1:1030097757643:web:60af064ed2e83c78fd824e"
+        };
+
+        const MAX_IMAGES = 3; 
+
+        const PAGES = {
+            SPLASH: 'splash',
+            PROFILE: 'profile',
+            DISCLAIMER: 'disclaimer', 
+            CAMERA: 'camera',
+            ANALYSIS: 'analysis',
+            COLLECTION: 'collection',
+            RECIPES: 'recipes'
+        };
+
+        const initialResult = {
+            commonName: 'Plant Name',
+            scientificName: 'Scientific Name',
+            identificationConfidence: 'N/A',
+            description: 'Awaiting image. Tap the camera to analyze a new plant or mushroom!',
+            edibilityStatus: 'Unknown',
+            primaryUsage: 'Awaiting analysis',
+            perennialOrAnnual: 'N/A',
+            ediblePartsDescription: 'N/A'
+        };
+
+        /**
+         * Converts a file (like an image) into a Base64 string.
+         */
+        const fileToBase64 = (file) => {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result.split(',')[1]);
+                reader.onerror = (error) => reject(error);
+                reader.readAsDataURL(file);
+            });
+        };
+
+        /**
+         * Calls the Gemini API for multimodal (image + text) content generation.
+         */
+        const callGeminiApi = async (imageParts) => { 
+            const apiKey = ""; 
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+
+            const responseSchema = {
+                type: "OBJECT",
+                properties: {
+                    "commonName": { "type": "STRING" },
+                    "scientificName": { "type": "STRING" },
+                    "identificationConfidence": { "type": "STRING", description: "e.g., High, Medium, Low" },
+                    "description": { "type": "STRING" },
+                    "edibilityStatus": { "type": "STRING", description: "Must be Edible, Poisonous, or Non-Edible/Non-Toxic" },
+                    "primaryUsage": { "type": "STRING", description: "e.g., Medicinal, Culinary, Ornamental, Toxic Risk" },
+                    "perennialOrAnnual": { "type": "STRING", description: "Must be Perennial, Annual, Biennial, or N/A (for mushrooms)" },
+                    "ediblePartsDescription": { "type": "STRING", description: "If edibilityStatus is 'Edible', state which parts (e.g., roots, flowers, leaves) are consumable. If not edible, state 'N/A' or 'None'."}
+                },
+                required: ["commonName", "scientificName", "edibilityStatus", "ediblePartsDescription"]
+            };
+
+            const systemPrompt = (
+                "You are RootSage, an expert botanist and mycologist. Your task is to identify the plant or mushroom using the up to three images provided (e.g., top view, stalk, leaf detail). " +
+                "Use all visual context to provide the most accurate assessment. " +
+                "You MUST respond ONLY with a JSON object that strictly adheres to the provided schema. " +
+                "When determining edibility, prioritize safety. For mushrooms and potentially toxic plants, use 'Poisonous' or 'Toxic Risk'. " +
+                "Crucially, if the plant is edible, use 'Edible' for the status and provide specific, detailed information on which parts are safe to consume in the 'ediblePartsDescription' field. " + 
+                "Also state if it is an Annual, Perennial, or N/A for mushrooms. Do not include any text outside the JSON block."
+            );
+            
+            const userQuery = "Identify the plant or mushroom in the images and provide its details, focusing on edibility, usage, and life cycle (annual/perennial).";
+
+            const contentsParts = [
+                { text: userQuery },
+                ...imageParts.map(part => ({
+                    inlineData: {
+                        mimeType: part.mimeType,
+                        data: part.base64Data
+                    }
+                }))
+            ];
+
+            const payload = {
+                contents: [
+                    {
+                        role: "user",
+                        parts: contentsParts
+                    }
+                ],
+                systemInstruction: {
+                    parts: [{ text: systemPrompt }]
+                },
+                generationConfig: {
+                    responseMimeType: "application/json",
+                    responseSchema: responseSchema
+                }
+            };
+
+            const maxRetries = 3;
+            let lastError = null;
+
+            for (let attempt = 0; attempt < maxRetries; attempt++) {
+                try {
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (!response.ok) {
+                        const errorBody = await response.json();
+                        throw new Error(`API response error: ${response.status} - ${errorBody.error?.message || 'Unknown Error'}`);
+                    }
+
+                    const result = await response.json();
+                    const jsonText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+
+                    if (jsonText) {
+                        return JSON.parse(jsonText);
+                    }
+                    throw new Error("Received empty or malformed response from the model.");
+
+                } catch (error) {
+                    lastError = error;
+                    if (attempt < maxRetries - 1) {
+                        await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, attempt)));
+                    }
+                }
+            }
+            throw lastError; 
+        };
+
+        // --- Component Fragments (Icons) ---
+        const IconLeaf = (props) => (<svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 20A7 7 0 0 1 9.8 6.1C15.8 4.2 18.7 7.2 20.8 9.3a1 1 0 0 0-.2 1.4c-.6.6-1.5 1-2.4.7C12.8 11.3 11 15 11 20Z"/><path d="M7.7 7.7c-.8-.8-1.8-1.2-2.8-1-.7 0-1.2.5-1.5 1.2-.5 1.1-.4 2.3.4 3.2"/><path d="M12 20l4.5-4.5"/></svg>);
+        const IconCamera = (props) => (<svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>);
+        const IconBook = (props) => (<svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20h-4.5"/><path d="M16 3.5V1H9.5a2.5 2.5 0 0 0 0 5h6.5"/></svg>);
+        const IconUser = (props) => (<svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>);
+        const IconList = (props) => (<svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="8" x2="21" y1="6" y2="6"/><line x1="8" x2="21" y1="12" y2="12"/><line x1="8" x2="21" y1="18" y2="18"/><line x1="3" x2="3.01" y1="6" y2="6"/><line x1="3" x2="3.01" y1="12" y2="12"/><line x1="3" x2="3.01" y1="18" y2="18"/></svg>);
+
+
+        const EdibilityBadge = ({ status }) => {
+            let colorClasses = '';
+            switch (status.toLowerCase()) {
+                case 'edible':
+                    colorClasses = 'bg-green-600 text-white border-green-700';
+                    break;
+                case 'poisonous':
+                case 'toxic risk':
+                    colorClasses = 'bg-red-600 text-white border-red-700 animate-pulse';
+                    break;
+                case 'non-edible/non-toxic':
+                    colorClasses = 'bg-yellow-100 text-yellow-800 border-yellow-300';
+                    break;
+                default:
+                    colorClasses = 'bg-gray-100 text-gray-800 border-gray-300';
+            }
+
+            return (
+                <span className={`inline-flex items-center px-4 py-1.5 rounded-full text-sm font-semibold border-2 shadow-sm ${colorClasses}`}>
+                    {status}
+                </span>
+            );
+        };
+
+        // --- App Component ---
+
+        const App = () => {
+            const [currentPage, setCurrentPage] = useState(PAGES.SPLASH);
+            const [isAuthReady, setIsAuthReady] = useState(false);
+            const [userId, setUserId] = useState(null);
+            
+            // Data States
+            const [userProfile, setUserProfile] = useState(undefined); 
+            const [collections, setCollections] = useState([]);
+            
+            // Camera/Analysis States
+            const [imageFiles, setImageFiles] = useState([]);
+            const [imagePreviewUrls, setImagePreviewUrls] = useState([]);
+            const [result, setResult] = useState(initialResult);
+            const [isLoading, setIsLoading] = useState(false);
+            const [error, setError] = useState(null);
+            const [highlightMode, setHighlightMode] = useState(false);
+
+            // 1. Firebase Initialization and Auth
+            useEffect(() => {
+                const initializeFirebase = async () => {
+                    if (!firebaseConfig.projectId) {
+                        setError("Firebase configuration is missing or invalid. Please check YOUR_FIREBASE_CONFIG.");
+                        return;
+                    }
+                    try {
+                        const app = initializeApp(firebaseConfig);
+                        db = getFirestore(app);
+                        auth = getAuth(app);
+                        
+                        // Use Anonymous Sign-In for external deployment
+                        await signInAnonymously(auth);
+                        
+                        const currentUserId = auth.currentUser?.uid || 'anonymous';
+                        setUserId(currentUserId);
+                        setIsAuthReady(true);
+                        console.log("Firebase initialized and user authenticated:", currentUserId);
+
+                    } catch (e) {
+                        console.error("Firebase initialization failed:", e);
+                        setError(`Failed to connect to backend: ${e.message}`);
+                    }
+                };
+                initializeFirebase();
+            }, []);
+
+            // 2. Data Listeners (Profile and Collection) and Initial Navigation
+            useEffect(() => {
+                if (!isAuthReady || !userId) return;
+
+                // Profile Listener (Private Data)
+                const profilePath = `artifacts/${appId}/users/${userId}/profile/data`;
+                const profileRef = doc(db, profilePath);
+                const unsubscribeProfile = onSnapshot(profileRef, (docSnap) => {
+                    if (docSnap.exists()) {
+                        const profileData = docSnap.data();
+                        setUserProfile({ id: docSnap.id, ...profileData });
+                        
+                        if (currentPage === PAGES.SPLASH || currentPage === PAGES.PROFILE || currentPage === PAGES.DISCLAIMER) {
+                            if (!profileData.hasAcceptedDisclaimer) {
+                                setCurrentPage(PAGES.DISCLAIMER);
+                            } else {
+                                setCurrentPage(PAGES.CAMERA);
+                            }
+                        }
+                    } else {
+                        setUserProfile(null); 
+                        if (currentPage === PAGES.SPLASH) {
+                             setCurrentPage(PAGES.PROFILE);
+                        }
+                    }
+                }, (err) => {
+                    console.error("Error fetching profile:", err);
+                    setError("Could not load user profile.");
+                    setUserProfile(null); 
+                });
+
+                // Collection Listener (Private Data)
+                const collectionPath = `artifacts/${appId}/users/${userId}/collections`;
+                const q = query(collection(db, collectionPath));
+                const unsubscribeCollection = onSnapshot(q, (snapshot) => {
+                    const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    setCollections(items.sort((a, b) => b.timestamp - a.timestamp)); 
+                }, (err) => {
+                    console.error("Error fetching collection:", err);
+                    setError("Could not load plant collection.");
+                });
+
+                return () => {
+                    unsubscribeProfile();
+                    unsubscribeCollection();
+                };
+            }, [isAuthReady, userId, currentPage]); 
+
+            // --- Data Handlers (Same as previous implementation) ---
+            const handleCreateProfile = async (name) => {
+                if (!userId || !db) return;
+                try {
+                    const profilePath = `artifacts/${appId}/users/${userId}/profile/data`;
+                    const profileRef = doc(db, profilePath);
+                    await setDoc(profileRef, {
+                        name: name,
+                        joinedDate: serverTimestamp(),
+                        plantsIdentified: 0,
+                        badges: ["Novice Sprout"],
+                        userId: userId,
+                        hasAcceptedDisclaimer: false, 
+                    });
+                } catch (e) {
+                    console.error("Error creating profile:", e);
+                    setError("Failed to create profile.");
+                }
+            };
+            
+            const handleAcceptDisclaimer = async () => {
+                if (!userId || !db) return;
+                setIsLoading(true);
+                try {
+                    const profilePath = `artifacts/${appId}/users/${userId}/profile/data`;
+                    const profileRef = doc(db, profilePath);
+                    await setDoc(profileRef, {
+                        hasAcceptedDisclaimer: true,
+                    }, { merge: true });
+                    
+                } catch (e) {
+                    console.error("Error accepting disclaimer:", e);
+                    setError("Failed to save acceptance.");
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+
+            const handleAddToCollection = async () => {
+                if (!userId || !db || !result.commonName || result.commonName === initialResult.commonName) {
+                    setError("No analysis result to save.");
+                    return;
+                }
+
+                setIsLoading(true);
+                try {
+                    const collectionPath = `artifacts/${appId}/users/${userId}/collections`;
+                    await addDoc(collection(db, collectionPath), {
+                        ...result,
+                        imagePreviewUrl: imagePreviewUrls[0], 
+                        imagePreviewUrls: imagePreviewUrls,
+                        timestamp: serverTimestamp(),
+                    });
+
+                    const profilePath = `artifacts/${appId}/users/${userId}/profile/data`;
+                    const profileRef = doc(db, profilePath);
+                    await setDoc(profileRef, {
+                        plantsIdentified: (userProfile?.plantsIdentified || 0) + 1
+                    }, { merge: true });
+
+                    setCurrentPage(PAGES.COLLECTION); 
+                } catch (e) {
+                    console.error("Error saving to collection:", e);
+                    setError("Failed to save plant to collection.");
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+            
+            const handleClearImage = (indexToRemove) => {
+                if (imagePreviewUrls[indexToRemove]) {
+                     URL.revokeObjectURL(imagePreviewUrls[indexToRemove]);
+                }
+               
+                setImageFiles(prev => prev.filter((_, index) => index !== indexToRemove));
+                setImagePreviewUrls(prev => prev.filter((_, index) => index !== indexToRemove));
+                setError(null);
+            };
+
+            const handleRetake = () => {
+                imagePreviewUrls.forEach(URL.revokeObjectURL);
+                setImageFiles([]);
+                setImagePreviewUrls([]);
+                setResult(initialResult);
+                setError(null);
+                setCurrentPage(PAGES.CAMERA);
+                setHighlightMode(false);
+            }
+
+
+            const handleFileChange = (event) => {
+                const file = event.target.files[0];
+                if (file && file.type.startsWith('image/')) {
+                    if (imageFiles.length >= MAX_IMAGES) {
+                        setError(`You can only upload up to ${MAX_IMAGES} images.`);
+                        return;
+                    }
+
+                    const newFiles = [...imageFiles, file];
+                    const newUrls = [...imagePreviewUrls, URL.createObjectURL(file)];
+                    
+                    setImageFiles(newFiles);
+                    setImagePreviewUrls(newUrls);
+                    setError(null);
+
+                    if (newFiles.length === MAX_IMAGES) {
+                        setResult(initialResult);
+                        setCurrentPage(PAGES.ANALYSIS);
+                        analyzePlant(newFiles); 
+                    }
+                } else if (file) {
+                    setError("Please select a valid image file (JPEG, PNG).");
+                }
+                const fileInput = document.getElementById('file-upload');
+                if (fileInput) fileInput.value = '';
+            };
+            
+            const triggerCamera = () => {
+                if (imageFiles.length < MAX_IMAGES) {
+                    document.getElementById('file-upload').click();
+                }
+            };
+
+            const analyzePlant = useCallback(async (filesToAnalyze) => {
+                const files = filesToAnalyze || imageFiles;
+                if (!files || files.length === 0) {
+                    setError("No image provided for analysis.");
+                    return;
+                }
+
+                setIsLoading(true);
+                setError(null);
+
+                try {
+                    const imageParts = [];
+                    for (const file of files) {
+                        const base64Data = await fileToBase64(file);
+                        imageParts.push({ base64Data, mimeType: file.type });
+                    }
+                    
+                    const analysisResult = await callGeminiApi(imageParts);
+                    
+                    const formattedResult = {
+                        ...analysisResult,
+                        identificationConfidence: analysisResult.identificationConfidence || 'N/A'
+                    };
+                    
+                    if (formattedResult.identificationConfidence.toLowerCase() === 'low') {
+                        setError("RootSage had a hard time recognizing this. Please retry with a clearer picture.");
+                        setHighlightMode(true);
+                    } else {
+                        setHighlightMode(false);
+                    }
+
+                    setResult(formattedResult);
+                } catch (e) {
+                    console.error("Analysis failed:", e);
+                    setError("Analysis failed. This might be due to an unclear image. Please retry.");
+                    setResult(initialResult);
+                } finally {
+                    setIsLoading(false);
+                }
+            }, [imageFiles]);
+
+            // --- UI Components (Same as previous implementation) ---
+
+            const NavBar = () => (
+                <nav className="fixed bottom-0 left-0 right-0 h-16 bg-white border-t border-gray-200 shadow-xl flex justify-around items-center z-10 max-w-lg mx-auto">
+                    <NavItem page={PAGES.COLLECTION} icon={IconBook} label="Collection" />
+                    <div className="flex-shrink-0 -mt-8">
+                        <button
+                            onClick={() => setCurrentPage(PAGES.CAMERA)}
+                            disabled={userProfile && !userProfile.hasAcceptedDisclaimer} 
+                            className={`p-4 rounded-full shadow-2xl transition-all duration-300 transform ${currentPage === PAGES.CAMERA ? 'bg-green-700 ring-4 ring-green-300' : 'bg-green-600 hover:bg-green-700 disabled:bg-gray-400'}`}
+                        >
+                            <IconCamera className="w-8 h-8 text-white stroke-2" />
+                        </button>
+                    </div>
+                    <NavItem page={PAGES.RECIPES} icon={IconList} label="Recipes" />
+                    <NavItem page={PAGES.PROFILE} icon={IconUser} label="Profile" />
+                </nav>
+            );
+
+            const NavItem = ({ page, icon: Icon, label }) => (
+                <button
+                    onClick={() => setCurrentPage(page)}
+                    className={`flex flex-col items-center p-2 text-xs font-medium transition-colors duration-200 ${
+                        currentPage === page ? 'text-green-600' : 'text-gray-500 hover:text-green-500'
+                    }`}
+                >
+                    <Icon className="w-6 h-6" />
+                    <span>{label}</span>
+                </button>
+            );
+
+            const SplashPage = () => (
+                <div className="flex flex-col items-center justify-center h-full bg-green-700 text-white">
+                    <IconLeaf className="w-20 h-20 animate-bounce" />
+                    <h1 className="text-4xl font-extrabold mt-4">RootSage</h1>
+                    <p className="mt-2 text-lg font-light">Identifying Nature's Secrets</p>
+                    {error && <p className="mt-4 text-sm bg-red-800 p-2 rounded-lg">{error}</p>}
+                </div>
+            );
+
+            const ProfileSetup = () => {
+                const [name, setName] = useState('');
+                return (
+                    <div className="p-6 h-full flex flex-col justify-center items-center text-center">
+                        <IconUser className="w-12 h-12 text-green-600 mb-4" />
+                        <h2 className="text-2xl font-bold text-gray-800 mb-2">Welcome to RootSage!</h2>
+                        <p className="text-gray-600 mb-6">Let's set up your profile for gamification.</p>
+                        
+                        <input
+                            type="text"
+                            placeholder="Enter your RootSage Name"
+                            value={name}
+                            onChange={(e) => setName(e.target.value)}
+                            className="w-full p-3 mb-4 border-2 border-green-300 rounded-lg focus:ring-green-500 focus:border-green-500"
+                        />
+                        <button
+                            onClick={() => handleCreateProfile(name)}
+                            disabled={!name.trim()}
+                            className="w-full py-3 bg-green-600 text-white font-semibold rounded-lg shadow-md hover:bg-green-700 transition-colors disabled:opacity-50"
+                        >
+                            Start Exploring
+                        </button>
+                    </div>
+                );
+            };
+
+            const DisclaimerPage = () => (
+                <div className="p-6 h-full flex flex-col justify-between text-center pb-20">
+                    <div className="space-y-6 flex-1">
+                        <IconLeaf className="w-12 h-12 text-red-600 mx-auto mb-4" />
+                        <h2 className="text-3xl font-extrabold text-red-700 mb-4">CRITICAL SAFETY WARNING</h2>
+
+                        <div className="text-left p-4 bg-red-50 border-2 border-red-300 rounded-xl shadow-lg space-y-3">
+                            <p className="font-bold text-red-800">
+                                RootSage is an AI tool and is <span className="underline">NOT</span> a substitute for professional expertise.
+                            </p>
+                            <ul className="list-disc list-inside text-sm text-gray-700 space-y-2">
+                                <li>
+                                    **Not Nutritional Experts:** We are by no means a nutritional or medicinal expert. Identification is based on visual AI analysis, which can be **incorrect**.
+                                </li>
+                                <li>
+                                    **Liability Waiver:** Consuming anything that this app suggests as safe or unsafe is **entirely at your own risk.** We will not be held liable for any illness, injury, or adverse reactions resulting from actions taken based on this app's suggestions.
+                                </li>
+                                <li>
+                                    **Consult an Expert:** You need to seek advice from a **real-life expert** (such as a certified botanist or mycologist) before making any decisions about a plant or mushroom, whether it's in your backyard or during a hike.
+                                </li>
+                            </ul>
+                        </div>
+
+                        <p className="text-sm text-gray-600 pt-4">
+                            By clicking "I Understand and Accept," you confirm that you have read and accepted these terms and understand the risks involved.
+                        </p>
+                    </div>
+                    
+                    <button
+                        onClick={handleAcceptDisclaimer}
+                        disabled={isLoading}
+                        className="w-full py-3 bg-red-600 text-white font-semibold rounded-lg shadow-md hover:bg-red-700 transition-colors disabled:opacity-50"
+                    >
+                        {isLoading ? 'Saving...' : 'I Understand and Accept'}
+                    </button>
+                </div>
+            );
+
+            const ProfilePage = () => {
+                if (userProfile === null) return <ProfileSetup />;
+
+                const joinedDate = userProfile.joinedDate?.toDate ? userProfile.joinedDate.toDate().toLocaleDateString() : 'Loading...';
+                const plantsCount = userProfile.plantsIdentified || 0;
+
+                return (
+                    <div className="p-6 space-y-6">
+                        <div className="text-center pb-4 border-b">
+                            <IconUser className="w-16 h-16 text-green-600 mx-auto mb-2 p-3 bg-green-100 rounded-full" />
+                            <h2 className="text-3xl font-bold text-gray-900">{userProfile.name}</h2>
+                            <p className="text-sm text-gray-500">Member ID: {userId.substring(0, 8)}...</p>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4 text-center">
+                            <StatCard label="Plants Identified" value={plantsCount} color="green" />
+                            <StatCard label="Joined Date" value={joinedDate} color="gray" />
+                        </div>
+                        
+                        <div className="p-4 bg-white rounded-xl shadow-lg border border-green-100">
+                            <h3 className="text-xl font-semibold text-gray-700 mb-3">Your Badges</h3>
+                            <div className="flex flex-wrap gap-2">
+                                {(userProfile.badges || []).map((badge, index) => (
+                                    <span key={index} className="px-3 py-1 bg-yellow-400 text-yellow-900 text-xs font-bold rounded-full shadow-md">
+                                        ⭐ {badge}
+                                    </span>
+                                ))}
+                                {plantsCount >= 5 && <span className="px-3 py-1 bg-blue-400 text-blue-900 text-xs font-bold rounded-full shadow-md">
+                                    🌿 Field Explorer
+                                </span>}
+                                {plantsCount < 5 && <span className="px-3 py-1 bg-gray-200 text-gray-500 text-xs font-bold rounded-full">
+                                    Locked Badge
+                                </span>}
+                            </div>
+                        </div>
+                    </div>
+                );
+            };
+
+            const StatCard = ({ label, value, color }) => (
+                <div className={`p-4 bg-white rounded-xl shadow-lg border-t-4 border-${color}-500`}>
+                    <p className={`text-3xl font-extrabold text-${color}-700`}>{value}</p>
+                    <p className="text-sm text-gray-500 mt-1">{label}</p>
+                </div>
+            );
+            
+            const CameraPage = () => (
+                <div className="flex flex-col items-center justify-start h-full p-6 text-center">
+                    <h2 className="text-2xl font-bold text-gray-800 mb-2">Capture Multiple Views</h2>
+                    <p className="text-gray-600 mb-6">
+                        Take up to **{MAX_IMAGES}** photos (e.g., top view, stalk, leaf detail) for the most accurate identification.
+                    </p>
+
+                    <div className="grid grid-cols-3 gap-4 w-full mb-8">
+                        {Array.from({ length: MAX_IMAGES }).map((_, index) => (
+                            <div 
+                                key={index} 
+                                className={`relative w-full aspect-square border-4 border-dashed rounded-xl overflow-hidden shadow-inner cursor-pointer transition-colors ${
+                                    imageFiles.length <= index ? 'border-gray-300 hover:border-green-400' : 'border-green-500'
+                                }`}
+                                onClick={imageFiles.length <= index ? triggerCamera : null}
+                            >
+                                {imagePreviewUrls[index] ? (
+                                    <>
+                                        <img 
+                                            src={imagePreviewUrls[index]} 
+                                            alt={`Plant view ${index + 1}`} 
+                                            className="w-full h-full object-cover"
+                                        />
+                                        <button
+                                            className="absolute top-1 right-1 bg-red-600 text-white rounded-full p-1 text-xs font-bold h-6 w-6 flex items-center justify-center shadow-md hover:bg-red-700 z-10"
+                                            onClick={(e) => {
+                                                e.stopPropagation(); 
+                                                handleClearImage(index);
+                                            }}
+                                        >
+                                            X
+                                        </button>
+                                    </>
+                                ) : (
+                                    <div className="flex flex-col items-center justify-center w-full h-full bg-gray-100 text-gray-400">
+                                        <IconCamera className="w-8 h-8" />
+                                        <span className="text-xs mt-1">View {index + 1}</span>
+                                    </div>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+
+                    <input 
+                        id="file-upload" 
+                        type="file" 
+                        className="hidden" 
+                        accept="image/*"
+                        capture="environment" 
+                        onChange={handleFileChange} 
+                    />
+                    
+                    <button
+                        onClick={() => {
+                            setResult(initialResult);
+                            setCurrentPage(PAGES.ANALYSIS);
+                            analyzePlant();
+                        }}
+                        disabled={imageFiles.length === 0}
+                        className="w-full py-3 mb-4 bg-green-600 text-white font-semibold rounded-lg shadow-md hover:bg-green-700 transition-colors disabled:opacity-50"
+                    >
+                        {imageFiles.length > 0 ? `Analyze ${imageFiles.length} Images` : 'Take First Photo'}
+                    </button>
+
+                    {imageFiles.length > 0 && (
+                        <button
+                            onClick={handleRetake}
+                            className="w-full py-3 bg-gray-200 text-gray-700 font-bold rounded-xl shadow-lg hover:bg-gray-300 transition-colors"
+                        >
+                            Clear All & Retake
+                        </button>
+                    )}
+                    
+                    {error && <p className="text-red-500 mt-4 text-sm">{error}</p>}
+                </div>
+            );
+
+            const AnalysisPage = () => (
+                <div className="p-6 space-y-6 pb-20"> 
+                    <h2 className="text-2xl font-bold text-gray-800">RootSage Analysis</h2>
+                    
+                    <div className="flex justify-start space-x-2 w-full overflow-x-auto p-2 bg-gray-50 rounded-xl shadow-inner">
+                        {imagePreviewUrls.map((url, index) => (
+                            <div key={index} className="flex-shrink-0 w-24 h-24 border-2 border-gray-300 rounded-lg overflow-hidden shadow-md">
+                                <img 
+                                    src={url} 
+                                    alt={`Target view ${index + 1}`} 
+                                    className="w-full h-full object-cover"
+                                />
+                            </div>
+                        ))}
+                    </div>
+
+                    {error && (
+                        <div className="p-3 bg-red-100 text-red-700 border border-red-300 rounded-lg font-medium text-sm">
+                            {error}
+                        </div>
+                    )}
+
+                    {isLoading ? (
+                        <div className="flex justify-center items-center p-10 bg-white rounded-xl shadow-inner">
+                            <svg className="animate-spin h-8 w-8 text-green-600 mr-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            <span className="text-lg font-semibold text-gray-700">Analyzing Image(s) with Gemini...</span>
+                        </div>
+                    ) : (
+                        <div className="space-y-4 p-4 bg-white rounded-xl shadow-lg border-t-4 border-green-500">
+                            <div className="border-b pb-3">
+                                <h3 className="text-3xl font-bold text-gray-900">{result.commonName}</h3>
+                                <p className="italic text-lg text-green-700">{result.scientificName}</p>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-2">
+                                <EdibilityBadge status={result.edibilityStatus} />
+                                <span className="px-3 py-1 bg-indigo-100 text-indigo-700 text-xs font-semibold rounded-full">
+                                    {result.perennialOrAnnual}
+                                </span>
+                            </div>
+                            
+                            {(result.edibilityStatus.toLowerCase() === 'edible') && (
+                                <div className="p-3 bg-green-50 border-l-4 border-green-500 text-green-800 rounded-lg text-sm">
+                                    <span className="font-bold block mb-1">✅ Edible Parts:</span>
+                                    {result.ediblePartsDescription || 'Information missing from analysis.'}
+                                </div>
+                            )}
+
+                            {(result.edibilityStatus.toLowerCase() === 'poisonous' || result.edibilityStatus.toLowerCase() === 'toxic risk') && (
+                                <div className="mt-4 p-3 bg-red-100 border-l-4 border-red-500 text-red-800 rounded-lg text-sm font-bold">
+                                    ⚠️ DANGER: HIGHLY TOXIC/POISONOUS. DO NOT CONSUME.
+                                    <p className="mt-1 font-normal">Edible parts: {result.ediblePartsDescription || 'N/A'}</p>
+                                </div>
+                            )}
+                            
+                            {(result.edibilityStatus.toLowerCase() === 'non-edible/non-toxic') && (
+                                <div className="mt-4 p-3 bg-yellow-50 border-l-4 border-yellow-500 text-yellow-800 rounded-lg text-sm">
+                                    <span className="font-bold block mb-1">ℹ️ Not Recommended for Consumption:</span>
+                                    While not known to be toxic, this plant is generally not consumed for food, or its edibility is uncertain.
+                                    <p className="mt-1 font-normal">Edible parts: {result.ediblePartsDescription || 'N/A'}</p>
+                                </div>
+                            )}
+
+                            <p className="text-gray-700 leading-relaxed text-base pt-2">{result.description}</p>
+                            
+                            <p className="text-gray-600 text-sm">
+                                <span className="font-semibold">Usage:</span> {result.primaryUsage}
+                                <span className="ml-4 font-semibold">Confidence:</span> {result.identificationConfidence}
+                            </p>
+
+                        </div>
+                    )}
+
+                    <div className="flex space-x-4 pt-4">
+                        <button
+                            onClick={handleAddToCollection}
+                            disabled={isLoading || result.commonName === initialResult.commonName || error}
+                            className="flex-1 py-3 bg-blue-600 text-white font-bold rounded-xl shadow-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+                        >
+                            Add to Collection
+                        </button>
+                        <button
+                            onClick={handleRetake}
+                            className="flex-1 py-3 bg-gray-200 text-gray-700 font-bold rounded-xl shadow-lg hover:bg-gray-300 transition-colors"
+                        >
+                            Retake Picture
+                        </button>
+                    </div>
+                </div>
+            );
+
+            const CollectionPage = () => (
+                <div className="p-6 pb-20 space-y-4">
+                    <h2 className="text-2xl font-bold text-gray-800 border-b pb-2">My RootSage Collection ({collections.length})</h2>
+                    {collections.length === 0 ? (
+                        <div className="p-8 text-center text-gray-500 bg-gray-50 rounded-xl">
+                            <IconBook className="w-10 h-10 mx-auto mb-3" />
+                            <p>Your collection is empty. Snap a picture of a plant to start collecting!</p>
+                        </div>
+                    ) : (
+                        collections.map((item) => (
+                            <div key={item.id} className="flex items-start bg-white p-4 rounded-xl shadow-md border-l-4 border-green-500">
+                                <img 
+                                    src={item.imagePreviewUrls ? item.imagePreviewUrls[0] : item.imagePreviewUrl} 
+                                    alt={item.commonName} 
+                                    className="w-16 h-16 object-cover rounded-lg mr-4 flex-shrink-0" 
+                                />
+                                <div className="flex-grow">
+                                    <h4 className="font-semibold text-lg text-gray-800">{item.commonName}</h4>
+                                    <p className="italic text-sm text-green-700">{item.scientificName}</p>
+                                    <div className="mt-1">
+                                        <EdibilityBadge status={item.edibilityStatus} />
+                                    </div>
+                                    <p className="text-xs text-gray-400 mt-2">
+                                        Identified: {item.timestamp?.toDate ? item.timestamp.toDate().toLocaleDateString() : 'Saving...'}
+                                    </p>
+                                </div>
+                            </div>
+                        ))
+                    )}
+                </div>
+            );
+
+            const RecipesPage = () => (
+                <div className="p-6 h-full flex flex-col justify-center items-center text-center pb-20">
+                    <IconList className="w-12 h-12 text-green-600 mb-4" />
+                    <h2 className="text-2xl font-bold text-gray-800 mb-2">Recipe Corner (Coming Soon!)</h2>
+                    <p className="text-gray-600 mb-6">
+                        Soon, RootSage will offer recipes based on the edible plants and mushrooms you've collected.
+                        Stay tuned for culinary adventures!
+                    </p>
+                </div>
+            );
+
+            const renderPage = () => {
+                if (!isAuthReady) return <SplashPage />;
+                
+                if (userProfile === undefined) return <SplashPage />;
+
+                switch (currentPage) {
+                    case PAGES.SPLASH:
+                    case PAGES.PROFILE:
+                        return <ProfilePage />;
+                    case PAGES.DISCLAIMER: 
+                        return <DisclaimerPage />;
+                    case PAGES.CAMERA:
+                        return <CameraPage />;
+                    case PAGES.ANALYSIS:
+                        return <AnalysisPage />;
+                    case PAGES.COLLECTION:
+                        return <CollectionPage />;
+                    case PAGES.RECIPES:
+                        return <RecipesPage />;
+                    default:
+                        return userProfile ? <CameraPage /> : <ProfileSetup />;
+                }
+            };
+
+            return (
+                <div className="min-h-screen bg-gray-50 font-inter flex justify-center">
+                    <div className="relative w-full max-w-lg min-h-screen bg-white shadow-2xl border-x-4 border-gray-900 overflow-hidden">
+                        {currentPage !== PAGES.SPLASH && currentPage !== PAGES.CAMERA && currentPage !== PAGES.DISCLAIMER && (
+                            <header className="sticky top-0 bg-white p-4 border-b border-gray-200 flex items-center justify-between z-10">
+                                <h1 className="text-xl font-bold text-green-700 flex items-center">
+                                    <IconLeaf className="w-6 h-6 mr-1" /> RootSage
+                                </h1>
+                                <button 
+                                    onClick={() => setCurrentPage(PAGES.PROFILE)}
+                                    className="text-sm text-gray-500 hover:text-green-600"
+                                >
+                                    Profile
+                                </button>
+                            </header>
+                        )}
+
+                        <main className={`flex-grow overflow-y-auto ${currentPage !== PAGES.SPLASH && 'mb-16'} ${currentPage === PAGES.SPLASH ? 'h-screen' : 'pb-16'}`}>
+                            {renderPage()}
+                        </main>
+
+                        {currentPage !== PAGES.SPLASH && currentPage !== PAGES.DISCLAIMER && <NavBar />}
+                    </div>
+                </div>
+            );
+        };
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+
+        // --- End of RootSageApp.jsx code ---
+
+        
+    </script>
+</body>
+</html>
