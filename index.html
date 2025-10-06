@@ -9,49 +9,61 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black">
     <meta name="theme-color" content="#10b981">
     
-    <!-- Load Tailwind CSS, React, ReactDOM, and Babel -->
+    <!-- Load Tailwind CSS from CDN for styling -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-    <!-- Babel is needed to compile JSX in the browser for this single-file setup -->
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    
-    <!-- Firebase SDK Imports -->
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, collection, query, onSnapshot, setDoc, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        
-        window.firebaseImports = { initializeApp, getAuth, signInAnonymously, getFirestore, doc, collection, query, onSnapshot, setDoc, addDoc, serverTimestamp };
+    <script>
+      // Configure Tailwind for the Inter font and default styling
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['Inter', 'sans-serif'],
+            },
+          },
+        },
+      }
     </script>
-
     <style>
-        body {
-            font-family: 'Inter', sans-serif;
-            margin: 0;
-            padding: 0;
-            background-color: #f7f9fb;
-            display: flex;
-            justify-content: center;
-        }
-        /* Mobile frame styling */
-        .mobile-frame {
-            min-height: 100vh;
-            width: 100%;
-            max-width: 420px; /* Standard mobile width limit */
-            background-color: white;
-            box-shadow: 0 0 30px rgba(0, 0, 0, 0.2);
-        }
+      /* Apply Inter font globally and ensure responsive layout */
+      body {
+        font-family: 'Inter', sans-serif;
+        overflow-x: hidden;
+      }
+      /* Root container ensures full-screen display and centering on desktop */
+      #root {
+        min-height: 100vh;
+        display: flex;
+        justify-content: center;
+        background-color: #f9fafb; /* Light gray background for a clean look */
+      }
+      /* Prevent the content from being hidden behind the fixed navbar on mobile */
+      .pb-16 {
+        padding-bottom: 4rem; /* Standard nav bar height + padding */
+      }
     </style>
 </head>
 <body>
-    <div id="root" class="mobile-frame"></div>
+    <noscript>You need to enable JavaScript to run this app.</noscript>
+    <div id="root"></div>
 
-    <script type="text/babel">
+    <!-- The entire application logic is now in a single module script to resolve scope errors -->
+    <script type="module">
+        // --- Core Imports (React, ReactDOM, Firebase) ---
+        import * as React from 'https://unpkg.com/react@18/index.js';
+        import * as ReactDOM from 'https://unpkg.com/react-dom@18/index.js';
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, collection, query, onSnapshot, setDoc, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+
+        // --- Global Setup & Utility Functions ---
+
         const { useState, useCallback, useEffect } = React;
-        const { initializeApp, getAuth, signInAnonymously, getFirestore, doc, collection, query, onSnapshot, setDoc, addDoc, serverTimestamp } = window.firebaseImports;
-               
-        const firebaseConfig = {
+        const MAX_IMAGES = 3; 
+
+        // Hardcoded Firebase configuration for GitHub Pages/local environments.
+        // This is the public, anonymous config for the RootSage project.
+        const hardcodedFirebaseConfig = {
             apiKey: "AIzaSyBMoKi_lHpD-bm3lLuVOQo1TQmzm6ztmOcY",
             authDomain: "rootsage-93b81.firebaseapp.com",
             projectId: "rootsage-93b81",
@@ -60,12 +72,15 @@
             appId: "1:1030097757643:web:60af064ed2e83c78fd824e"
         };
 
-        const MAX_IMAGES = 3; 
+        // CRITICAL FIX: Use the Canvas global variables if available, otherwise use the hardcoded public config.
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : hardcodedFirebaseConfig;
+        const appId = typeof __app_id !== 'undefined' ? __app_id : firebaseConfig.projectId; 
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
         const PAGES = {
             SPLASH: 'splash',
             PROFILE: 'profile',
-            DISCLAIMER: 'disclaimer', 
+            DISCLAIMER: 'disclaimer',
             CAMERA: 'camera',
             ANALYSIS: 'analysis',
             COLLECTION: 'collection',
@@ -80,7 +95,7 @@
             edibilityStatus: 'Unknown',
             primaryUsage: 'Awaiting analysis',
             perennialOrAnnual: 'N/A',
-            ediblePartsDescription: 'N/A'
+            ediblePartsDescription: 'N/A' 
         };
 
         /**
@@ -112,21 +127,18 @@
                     "edibilityStatus": { "type": "STRING", description: "Must be Edible, Poisonous, or Non-Edible/Non-Toxic" },
                     "primaryUsage": { "type": "STRING", description: "e.g., Medicinal, Culinary, Ornamental, Toxic Risk" },
                     "perennialOrAnnual": { "type": "STRING", description: "Must be Perennial, Annual, Biennial, or N/A (for mushrooms)" },
-                    "ediblePartsDescription": { "type": "STRING", description: "If edibilityStatus is 'Edible', state which parts (e.g., roots, flowers, leaves) are consumable. If not edible, state 'N/A' or 'None'."}
+                    "ediblePartsDescription": { "type": "STRING", description: "If edibilityStatus is 'Edible', state which parts (e.g., roots, flowers, leaves) are consumable. If not edible, state 'N/A' or 'None'."} 
                 },
-                required: ["commonName", "scientificName", "edibilityStatus", "ediblePartsDescription"]
+                required: ["commonName", "scientificName", "edibilityStatus", "ediblePartsDescription"] 
             };
 
             const systemPrompt = (
-                "You are RootSage, an expert botanist and mycologist. Your task is to identify the plant or mushroom using the up to three images provided (e.g., top view, stalk, leaf detail). " +
-                "Use all visual context to provide the most accurate assessment. " +
+                "You are RootSage, an expert botanist and mycologist. Your task is to identify the plant or mushroom using the up to three images provided. " +
                 "You MUST respond ONLY with a JSON object that strictly adheres to the provided schema. " +
-                "When determining edibility, prioritize safety. For mushrooms and potentially toxic plants, use 'Poisonous' or 'Toxic Risk'. " +
-                "Crucially, if the plant is edible, use 'Edible' for the status and provide specific, detailed information on which parts are safe to consume in the 'ediblePartsDescription' field. " + 
-                "Also state if it is an Annual, Perennial, or N/A for mushrooms. Do not include any text outside the JSON block."
+                "Prioritize safety. If the plant is edible, use 'Edible' and provide specific, detailed information on which parts are safe to consume in 'ediblePartsDescription'."
             );
             
-            const userQuery = "Identify the plant or mushroom in the images and provide its details, focusing on edibility, usage, and life cycle (annual/perennial).";
+            const userQuery = "Identify the plant or mushroom in the images and provide its details.";
 
             const contentsParts = [
                 { text: userQuery },
@@ -140,10 +152,7 @@
 
             const payload = {
                 contents: [
-                    {
-                        role: "user",
-                        parts: contentsParts
-                    }
+                    { role: "user", parts: contentsParts }
                 ],
                 systemInstruction: {
                     parts: [{ text: systemPrompt }]
@@ -189,6 +198,7 @@
         };
 
         // --- Component Fragments (Icons) ---
+
         const IconLeaf = (props) => (<svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 20A7 7 0 0 1 9.8 6.1C15.8 4.2 18.7 7.2 20.8 9.3a1 1 0 0 0-.2 1.4c-.6.6-1.5 1-2.4.7C12.8 11.3 11 15 11 20Z"/><path d="M7.7 7.7c-.8-.8-1.8-1.2-2.8-1-.7 0-1.2.5-1.5 1.2-.5 1.1-.4 2.3.4 3.2"/><path d="M12 20l4.5-4.5"/></svg>);
         const IconCamera = (props) => (<svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>);
         const IconBook = (props) => (<svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20h-4.5"/><path d="M16 3.5V1H9.5a2.5 2.5 0 0 0 0 5h6.5"/></svg>);
@@ -227,11 +237,15 @@
             const [isAuthReady, setIsAuthReady] = useState(false);
             const [userId, setUserId] = useState(null);
             
+            // Firebase instances are now stored in state to ensure dependencies are tracked
+            const [firestore, setFirestore] = useState(null); 
+            const [authenticator, setAuthenticator] = useState(null); 
+            
             // Data States
             const [userProfile, setUserProfile] = useState(undefined); 
             const [collections, setCollections] = useState([]);
             
-            // Camera/Analysis States
+            // Camera/Analysis States 
             const [imageFiles, setImageFiles] = useState([]);
             const [imagePreviewUrls, setImagePreviewUrls] = useState([]);
             const [result, setResult] = useState(initialResult);
@@ -239,47 +253,58 @@
             const [error, setError] = useState(null);
             const [highlightMode, setHighlightMode] = useState(false);
 
-            // 1. Firebase Initialization and Auth
+            // 1. Firebase Initialization and Auth 
             useEffect(() => {
                 const initializeFirebase = async () => {
-                    if (!firebaseConfig.projectId) {
-                        setError("Firebase configuration is missing or invalid. Please check YOUR_FIREBASE_CONFIG.");
+                    if (!firebaseConfig) {
+                        setError("Firebase configuration is missing.");
                         return;
                     }
                     try {
                         const app = initializeApp(firebaseConfig);
-                        db = getFirestore(app);
-                        auth = getAuth(app);
+                        const dbInstance = getFirestore(app);
+                        const authInstance = getAuth(app);
                         
-                        // Use Anonymous Sign-In for external deployment
-                        await signInAnonymously(auth);
+                        // Set the initialized instances in state
+                        setFirestore(dbInstance);
+                        setAuthenticator(authInstance);
+
+                        // If in Canvas and token exists, use it. Otherwise, sign in anonymously (for GitHub Pages/Local).
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(authInstance, initialAuthToken);
+                        } else {
+                            await signInAnonymously(authInstance);
+                        }
                         
-                        const currentUserId = auth.currentUser?.uid || 'anonymous';
+                        const currentUserId = authInstance.currentUser?.uid || 'anonymous';
                         setUserId(currentUserId);
                         setIsAuthReady(true);
                         console.log("Firebase initialized and user authenticated:", currentUserId);
 
                     } catch (e) {
                         console.error("Firebase initialization failed:", e);
-                        setError(`Failed to connect to backend: ${e.message}`);
+                        // The fix ensures this message is only shown for real connection issues, not scope errors.
+                        setError(`Failed to connect to backend: ${e.message}`); 
                     }
                 };
                 initializeFirebase();
-            }, []);
+            }, []); // Run only once on component mount
 
             // 2. Data Listeners (Profile and Collection) and Initial Navigation
             useEffect(() => {
-                if (!isAuthReady || !userId) return;
+                // Ensure Firebase instances and user ID are ready before proceeding
+                if (!isAuthReady || !userId || !firestore || !authenticator) return;
 
                 // Profile Listener (Private Data)
                 const profilePath = `artifacts/${appId}/users/${userId}/profile/data`;
-                const profileRef = doc(db, profilePath);
+                const profileRef = doc(firestore, profilePath); 
                 const unsubscribeProfile = onSnapshot(profileRef, (docSnap) => {
                     if (docSnap.exists()) {
                         const profileData = docSnap.data();
                         setUserProfile({ id: docSnap.id, ...profileData });
                         
-                        if (currentPage === PAGES.SPLASH || currentPage === PAGES.PROFILE || currentPage === PAGES.DISCLAIMER) {
+                        // Only navigate away from SPLASH after profile data is confirmed to exist
+                        if (currentPage === PAGES.SPLASH) {
                             if (!profileData.hasAcceptedDisclaimer) {
                                 setCurrentPage(PAGES.DISCLAIMER);
                             } else {
@@ -288,22 +313,24 @@
                         }
                     } else {
                         setUserProfile(null); 
+                        
+                        // Only navigate away from SPLASH if profile does not exist
                         if (currentPage === PAGES.SPLASH) {
-                             setCurrentPage(PAGES.PROFILE);
+                            setCurrentPage(PAGES.PROFILE);
                         }
                     }
                 }, (err) => {
                     console.error("Error fetching profile:", err);
                     setError("Could not load user profile.");
-                    setUserProfile(null); 
+                    setUserProfile(null);
                 });
 
                 // Collection Listener (Private Data)
                 const collectionPath = `artifacts/${appId}/users/${userId}/collections`;
-                const q = query(collection(db, collectionPath));
+                const q = query(collection(firestore, collectionPath)); 
                 const unsubscribeCollection = onSnapshot(q, (snapshot) => {
                     const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    setCollections(items.sort((a, b) => b.timestamp - a.timestamp)); 
+                    setCollections(items.sort((a, b) => (b.timestamp?.toDate() || 0) - (a.timestamp?.toDate() || 0))); 
                 }, (err) => {
                     console.error("Error fetching collection:", err);
                     setError("Could not load plant collection.");
@@ -313,14 +340,15 @@
                     unsubscribeProfile();
                     unsubscribeCollection();
                 };
-            }, [isAuthReady, userId, currentPage]); 
+            }, [isAuthReady, userId, firestore, authenticator]); // Dependencies ensure this runs once initialization is complete
 
-            // --- Data Handlers (Same as previous implementation) ---
+            // --- Data Handlers ---
+
             const handleCreateProfile = async (name) => {
-                if (!userId || !db) return;
+                if (!userId || !firestore) return; 
                 try {
                     const profilePath = `artifacts/${appId}/users/${userId}/profile/data`;
-                    const profileRef = doc(db, profilePath);
+                    const profileRef = doc(firestore, profilePath);
                     await setDoc(profileRef, {
                         name: name,
                         joinedDate: serverTimestamp(),
@@ -336,11 +364,11 @@
             };
             
             const handleAcceptDisclaimer = async () => {
-                if (!userId || !db) return;
+                if (!userId || !firestore) return; 
                 setIsLoading(true);
                 try {
                     const profilePath = `artifacts/${appId}/users/${userId}/profile/data`;
-                    const profileRef = doc(db, profilePath);
+                    const profileRef = doc(firestore, profilePath);
                     await setDoc(profileRef, {
                         hasAcceptedDisclaimer: true,
                     }, { merge: true });
@@ -353,8 +381,9 @@
                 }
             };
 
+
             const handleAddToCollection = async () => {
-                if (!userId || !db || !result.commonName || result.commonName === initialResult.commonName) {
+                if (!userId || !firestore || !result.commonName || result.commonName === initialResult.commonName) { 
                     setError("No analysis result to save.");
                     return;
                 }
@@ -362,15 +391,16 @@
                 setIsLoading(true);
                 try {
                     const collectionPath = `artifacts/${appId}/users/${userId}/collections`;
-                    await addDoc(collection(db, collectionPath), {
+                    await addDoc(collection(firestore, collectionPath), { 
                         ...result,
                         imagePreviewUrl: imagePreviewUrls[0], 
-                        imagePreviewUrls: imagePreviewUrls,
+                        imagePreviewUrls: imagePreviewUrls, 
                         timestamp: serverTimestamp(),
                     });
 
+                    // Update user stats
                     const profilePath = `artifacts/${appId}/users/${userId}/profile/data`;
-                    const profileRef = doc(db, profilePath);
+                    const profileRef = doc(firestore, profilePath); 
                     await setDoc(profileRef, {
                         plantsIdentified: (userProfile?.plantsIdentified || 0) + 1
                     }, { merge: true });
@@ -383,12 +413,14 @@
                     setIsLoading(false);
                 }
             };
-            
+
+            // --- Camera/Analysis Handlers ---
+
             const handleClearImage = (indexToRemove) => {
                 if (imagePreviewUrls[indexToRemove]) {
-                     URL.revokeObjectURL(imagePreviewUrls[indexToRemove]);
+                    URL.revokeObjectURL(imagePreviewUrls[indexToRemove]);
                 }
-               
+            
                 setImageFiles(prev => prev.filter((_, index) => index !== indexToRemove));
                 setImagePreviewUrls(prev => prev.filter((_, index) => index !== indexToRemove));
                 setError(null);
@@ -423,7 +455,7 @@
                     if (newFiles.length === MAX_IMAGES) {
                         setResult(initialResult);
                         setCurrentPage(PAGES.ANALYSIS);
-                        analyzePlant(newFiles); 
+                        analyzePlant(newFiles);
                     }
                 } else if (file) {
                     setError("Please select a valid image file (JPEG, PNG).");
@@ -479,8 +511,8 @@
                 }
             }, [imageFiles]);
 
-            // --- UI Components (Same as previous implementation) ---
-
+            // --- UI Components ---
+            
             const NavBar = () => (
                 <nav className="fixed bottom-0 left-0 right-0 h-16 bg-white border-t border-gray-200 shadow-xl flex justify-around items-center z-10 max-w-lg mx-auto">
                     <NavItem page={PAGES.COLLECTION} icon={IconBook} label="Collection" />
@@ -533,6 +565,8 @@
                             value={name}
                             onChange={(e) => setName(e.target.value)}
                             className="w-full p-3 mb-4 border-2 border-green-300 rounded-lg focus:ring-green-500 focus:border-green-500"
+                            inputMode="text"
+                            autoComplete="off" 
                         />
                         <button
                             onClick={() => handleCreateProfile(name)}
@@ -757,6 +791,7 @@
                                 </div>
                             )}
 
+
                             {(result.edibilityStatus.toLowerCase() === 'poisonous' || result.edibilityStatus.toLowerCase() === 'toxic risk') && (
                                 <div className="mt-4 p-3 bg-red-100 border-l-4 border-red-500 text-red-800 rounded-lg text-sm font-bold">
                                     ⚠️ DANGER: HIGHLY TOXIC/POISONOUS. DO NOT CONSUME.
@@ -844,14 +879,14 @@
             );
 
             const renderPage = () => {
-                if (!isAuthReady) return <SplashPage />;
+                // Show SplashPage while loading auth or profile data
+                if (!isAuthReady || userProfile === undefined) return <SplashPage />;
                 
-                if (userProfile === undefined) return <SplashPage />;
-
                 switch (currentPage) {
                     case PAGES.SPLASH:
                     case PAGES.PROFILE:
-                        return <ProfilePage />;
+                        // ProfilePage handles showing ProfileSetup if userProfile === null
+                        return <ProfilePage />; 
                     case PAGES.DISCLAIMER: 
                         return <DisclaimerPage />;
                     case PAGES.CAMERA:
@@ -863,11 +898,12 @@
                     case PAGES.RECIPES:
                         return <RecipesPage />;
                     default:
-                        return userProfile ? <CameraPage /> : <ProfileSetup />;
+                        // Default to camera for existing users
+                        return <CameraPage />;
                 }
             };
 
-            return (
+            const RootComponent = () => (
                 <div className="min-h-screen bg-gray-50 font-inter flex justify-center">
                     <div className="relative w-full max-w-lg min-h-screen bg-white shadow-2xl border-x-4 border-gray-900 overflow-hidden">
                         {currentPage !== PAGES.SPLASH && currentPage !== PAGES.CAMERA && currentPage !== PAGES.DISCLAIMER && (
@@ -892,13 +928,9 @@
                     </div>
                 </div>
             );
-        };
-
-        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
-
-        // --- End of RootSageApp.jsx code ---
-
         
+
+            ReactDOM.createRoot(document.getElementById('root')).render(<RootComponent />);
     </script>
 </body>
 </html>
