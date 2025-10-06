@@ -9,8 +9,14 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black">
     <meta name="theme-color" content="#10b981">
     
-    <!-- Load Tailwind CSS from CDN for styling -->
+    <!-- Load Tailwind CSS, React, ReactDOM, and Babel -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- GLOBAL LIBS: React and ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <!-- CRITICAL: Babel is needed to compile JSX into standard JS, fixing the blank screen -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
     <script>
       // Configure Tailwind for the Inter font and default styling
       tailwind.config = {
@@ -46,23 +52,43 @@
     <noscript>You need to enable JavaScript to run this app.</noscript>
     <div id="root"></div>
 
-    <!-- The entire application logic is now in a single module script to resolve scope errors -->
+    <!-- 1. Firebase SDK Imports (Module Scope) -->
+    <!-- This module script loads Firebase and exposes the necessary functions globally (window.FirebaseSDK) 
+         so the Babel-processed JSX script can access them, resolving the DB initialization error. -->
     <script type="module">
-        // --- Core Imports (React, ReactDOM, Firebase) ---
-        import * as React from 'https://unpkg.com/react@18/index.js';
-        import * as ReactDOM from 'https://unpkg.com/react-dom@18/index.js';
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, collection, query, onSnapshot, setDoc, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
+        // Expose Firebase functions globally to be used by the React (Babel) script
+        window.FirebaseSDK = {
+            initializeApp,
+            getAuth,
+            signInAnonymously,
+            signInWithCustomToken,
+            getFirestore,
+            doc,
+            collection,
+            query,
+            onSnapshot,
+            setDoc,
+            addDoc,
+            serverTimestamp,
+        };
+        console.log("Firebase SDK loaded and exposed globally.");
+    </script>
 
-        // --- Global Setup & Utility Functions ---
 
+    <!-- 2. React Application Logic (Babel Scope) -->
+    <!-- This script uses the globally exposed Firebase functions and runs JSX -->
+    <script type="text/babel">
+        // --- Core Setup & Utility Functions ---
+
+        // Retrieve React from the global scope (loaded via CDN)
         const { useState, useCallback, useEffect } = React;
         const MAX_IMAGES = 3; 
 
         // Hardcoded Firebase configuration for GitHub Pages/local environments.
-        // This is the public, anonymous config for the RootSage project.
         const hardcodedFirebaseConfig = {
             apiKey: "AIzaSyBMoKi_lHpD-bm3lLuVOQo1TQmzm6ztmOcY",
             authDomain: "rootsage-93b81.firebaseapp.com",
@@ -72,7 +98,7 @@
             appId: "1:1030097757643:web:60af064ed2e83c78fd824e"
         };
 
-        // CRITICAL FIX: Use the Canvas global variables if available, otherwise use the hardcoded public config.
+        // CRITICAL: Use the Canvas global variables if available, otherwise use the hardcoded public config.
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : hardcodedFirebaseConfig;
         const appId = typeof __app_id !== 'undefined' ? __app_id : firebaseConfig.projectId; 
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
@@ -97,6 +123,9 @@
             perennialOrAnnual: 'N/A',
             ediblePartsDescription: 'N/A' 
         };
+        
+        // Retrieve Firebase functions from the global scope set in the module script
+        const F = window.FirebaseSDK || {};
 
         /**
          * Converts a file (like an image) into a Base64 string.
@@ -255,25 +284,33 @@
 
             // 1. Firebase Initialization and Auth 
             useEffect(() => {
+                // Check if Firebase SDK functions are available
+                if (!F.initializeApp) {
+                    // This error is crucial and shows if the global bridge failed to load
+                    setError("Loading backend failed: Firebase SDK not found in global scope. Try refreshing.");
+                    return;
+                }
+                
                 const initializeFirebase = async () => {
                     if (!firebaseConfig) {
                         setError("Firebase configuration is missing.");
                         return;
                     }
                     try {
-                        const app = initializeApp(firebaseConfig);
-                        const dbInstance = getFirestore(app);
-                        const authInstance = getAuth(app);
+                        // Use the globally exposed Firebase functions (F.initializeApp, F.getAuth, etc.)
+                        const app = F.initializeApp(firebaseConfig);
+                        const dbInstance = F.getFirestore(app);
+                        const authInstance = F.getAuth(app);
                         
                         // Set the initialized instances in state
                         setFirestore(dbInstance);
                         setAuthenticator(authInstance);
 
-                        // If in Canvas and token exists, use it. Otherwise, sign in anonymously (for GitHub Pages/Local).
+                        // Auth: Use custom token if provided (Canvas environment), otherwise sign in anonymously (GitHub Pages/Local)
                         if (initialAuthToken) {
-                            await signInWithCustomToken(authInstance, initialAuthToken);
+                            await F.signInWithCustomToken(authInstance, initialAuthToken);
                         } else {
-                            await signInAnonymously(authInstance);
+                            await F.signInAnonymously(authInstance);
                         }
                         
                         const currentUserId = authInstance.currentUser?.uid || 'anonymous';
@@ -283,7 +320,6 @@
 
                     } catch (e) {
                         console.error("Firebase initialization failed:", e);
-                        // The fix ensures this message is only shown for real connection issues, not scope errors.
                         setError(`Failed to connect to backend: ${e.message}`); 
                     }
                 };
@@ -292,13 +328,13 @@
 
             // 2. Data Listeners (Profile and Collection) and Initial Navigation
             useEffect(() => {
-                // Ensure Firebase instances and user ID are ready before proceeding
-                if (!isAuthReady || !userId || !firestore || !authenticator) return;
+                // Ensure Firebase functions, instances, and user ID are ready before proceeding
+                if (!isAuthReady || !userId || !firestore || !authenticator || !F.onSnapshot) return;
 
                 // Profile Listener (Private Data)
                 const profilePath = `artifacts/${appId}/users/${userId}/profile/data`;
-                const profileRef = doc(firestore, profilePath); 
-                const unsubscribeProfile = onSnapshot(profileRef, (docSnap) => {
+                const profileRef = F.doc(firestore, profilePath); 
+                const unsubscribeProfile = F.onSnapshot(profileRef, (docSnap) => {
                     if (docSnap.exists()) {
                         const profileData = docSnap.data();
                         setUserProfile({ id: docSnap.id, ...profileData });
@@ -327,10 +363,11 @@
 
                 // Collection Listener (Private Data)
                 const collectionPath = `artifacts/${appId}/users/${userId}/collections`;
-                const q = query(collection(firestore, collectionPath)); 
-                const unsubscribeCollection = onSnapshot(q, (snapshot) => {
+                const q = F.query(F.collection(firestore, collectionPath)); 
+                const unsubscribeCollection = F.onSnapshot(q, (snapshot) => {
                     const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    setCollections(items.sort((a, b) => (b.timestamp?.toDate() || 0) - (a.timestamp?.toDate() || 0))); 
+                    // Use a simple sort if timestamp is a Firebase Timestamp object
+                    setCollections(items.sort((a, b) => (b.timestamp?.toDate ? b.timestamp.toDate().getTime() : 0) - (a.timestamp?.toDate ? a.timestamp.toDate().getTime() : 0)));
                 }, (err) => {
                     console.error("Error fetching collection:", err);
                     setError("Could not load plant collection.");
@@ -345,13 +382,13 @@
             // --- Data Handlers ---
 
             const handleCreateProfile = async (name) => {
-                if (!userId || !firestore) return; 
+                if (!userId || !firestore || !F.setDoc) return; 
                 try {
                     const profilePath = `artifacts/${appId}/users/${userId}/profile/data`;
-                    const profileRef = doc(firestore, profilePath);
-                    await setDoc(profileRef, {
+                    const profileRef = F.doc(firestore, profilePath);
+                    await F.setDoc(profileRef, {
                         name: name,
-                        joinedDate: serverTimestamp(),
+                        joinedDate: F.serverTimestamp(),
                         plantsIdentified: 0,
                         badges: ["Novice Sprout"],
                         userId: userId,
@@ -364,12 +401,12 @@
             };
             
             const handleAcceptDisclaimer = async () => {
-                if (!userId || !firestore) return; 
+                if (!userId || !firestore || !F.setDoc) return; 
                 setIsLoading(true);
                 try {
                     const profilePath = `artifacts/${appId}/users/${userId}/profile/data`;
-                    const profileRef = doc(firestore, profilePath);
-                    await setDoc(profileRef, {
+                    const profileRef = F.doc(firestore, profilePath);
+                    await F.setDoc(profileRef, {
                         hasAcceptedDisclaimer: true,
                     }, { merge: true });
                     
@@ -383,25 +420,25 @@
 
 
             const handleAddToCollection = async () => {
-                if (!userId || !firestore || !result.commonName || result.commonName === initialResult.commonName) { 
-                    setError("No analysis result to save.");
+                if (!userId || !firestore || !result.commonName || result.commonName === initialResult.commonName || !F.addDoc || !F.collection || !F.setDoc) { 
+                    setError("No analysis result to save or Firestore is unavailable.");
                     return;
                 }
 
                 setIsLoading(true);
                 try {
                     const collectionPath = `artifacts/${appId}/users/${userId}/collections`;
-                    await addDoc(collection(firestore, collectionPath), { 
+                    await F.addDoc(F.collection(firestore, collectionPath), { 
                         ...result,
                         imagePreviewUrl: imagePreviewUrls[0], 
                         imagePreviewUrls: imagePreviewUrls, 
-                        timestamp: serverTimestamp(),
+                        timestamp: F.serverTimestamp(),
                     });
 
                     // Update user stats
                     const profilePath = `artifacts/${appId}/users/${userId}/profile/data`;
-                    const profileRef = doc(firestore, profilePath); 
-                    await setDoc(profileRef, {
+                    const profileRef = F.doc(firestore, profilePath); 
+                    await F.setDoc(profileRef, {
                         plantsIdentified: (userProfile?.plantsIdentified || 0) + 1
                     }, { merge: true });
 
@@ -620,7 +657,8 @@
             const ProfilePage = () => {
                 if (userProfile === null) return <ProfileSetup />;
 
-                const joinedDate = userProfile.joinedDate?.toDate ? userProfile.joinedDate.toDate().toLocaleDateString() : 'Loading...';
+                // Check if date object exists before calling toLocaleDateString
+                const joinedDate = userProfile.joinedDate && userProfile.joinedDate.toDate ? userProfile.joinedDate.toDate().toLocaleDateString() : 'Loading...';
                 const plantsCount = userProfile.plantsIdentified || 0;
 
                 return (
@@ -903,7 +941,8 @@
                 }
             };
 
-            const RootComponent = () => (
+            // CRITICAL FIX: The App component must RETURN the JSX structure.
+            return (
                 <div className="min-h-screen bg-gray-50 font-inter flex justify-center">
                     <div className="relative w-full max-w-lg min-h-screen bg-white shadow-2xl border-x-4 border-gray-900 overflow-hidden">
                         {currentPage !== PAGES.SPLASH && currentPage !== PAGES.CAMERA && currentPage !== PAGES.DISCLAIMER && (
@@ -928,9 +967,10 @@
                     </div>
                 </div>
             );
-        
+        }; // End of App Component
 
-            ReactDOM.createRoot(document.getElementById('root')).render(<RootComponent />);
+        // FINAL STEP: Render the App component once, outside the function definition.
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
     </script>
 </body>
 </html>
