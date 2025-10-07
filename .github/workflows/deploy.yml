@@ -1,0 +1,50 @@
+name: Deploy RootSage App
+
+# This workflow runs automatically whenever code is pushed to the 'main' branch.
+on:
+  push:
+    branches:
+      - main 
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+      
+    permissions:
+      contents: write # Required to push to the gh-pages branch
+      pages: write   # Required to deploy to GitHub Pages
+      id-token: write # Required for deployment configuration
+      
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # 1. Inject Firebase API Key
+      # This step uses 'sed' to find the placeholder and replace it with the secret value 
+      # you stored in your GitHub repository settings.
+      - name: Inject Firebase API Key
+        run: |
+          # Use '#' as the delimiter for sed to avoid conflicts with '/' in the API Key value
+          # This command replaces $$FIREBASE_API_KEY$$ with the actual secret value.
+          sed -i "s#\$\$FIREBASE_API_KEY\$\$#${{ secrets.FIREBASE_API_KEY }}#g" index.html
+        env:
+          # Ensure the secret is present before running the command
+          FIREBASE_API_KEY: ${{ secrets.FIREBASE_API_KEY }}
+
+      # 2. Setup GitHub Pages deployment environment
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      # 3. Deploy the modified files to GitHub Pages
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          # Upload the entire repository root directory, which now contains the key-injected index.html
+          path: '.'
+          
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
