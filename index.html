@@ -53,12 +53,28 @@
     <div id="root"></div>
 
     <!-- 1. Firebase SDK Imports (Module Scope) -->
-    <!-- This module script loads Firebase and exposes the necessary functions globally (window.FirebaseSDK) 
-         so the Babel-processed JSX script can access them, resolving the DB initialization error. -->
+    <!-- This module script loads Firebase and exposes the necessary functions globally (window.FirebaseSDK) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, collection, query, onSnapshot, setDoc, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { 
+            getAuth, 
+            signInAnonymously, 
+            signInWithCustomToken, 
+            GoogleAuthProvider, // New: Provider for Google Sign-In
+            signInWithPopup,    // New: Method for social sign-in
+            signOut             // Added for log out capability
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { 
+            getFirestore, 
+            doc, 
+            collection, 
+            query, 
+            onSnapshot, 
+            setDoc, 
+            addDoc, 
+            serverTimestamp,
+            getDoc // New: Required to check if profile exists after social login
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Expose Firebase functions globally to be used by the React (Babel) script
         window.FirebaseSDK = {
@@ -66,6 +82,9 @@
             getAuth,
             signInAnonymously,
             signInWithCustomToken,
+            GoogleAuthProvider,
+            signInWithPopup,
+            signOut,
             getFirestore,
             doc,
             collection,
@@ -74,6 +93,7 @@
             setDoc,
             addDoc,
             serverTimestamp,
+            getDoc, // Exposed getDoc
         };
         console.log("Firebase SDK loaded and exposed globally.");
     </script>
@@ -88,7 +108,9 @@
         const { useState, useCallback, useEffect } = React;
         const MAX_IMAGES = 3; 
 
-        // Hardcoded Firebase configuration for GitHub Pages/local environments.
+        // NOTE: The API key for Firebase is automatically picked up from the Canvas environment 
+        // if __firebase_config is defined. The provided key is used here as a fallback 
+        // for local/GitHub Pages environments.
         const hardcodedFirebaseConfig = {
             apiKey: "AIzaSyBMoKi_lHpD-bm3lLuVOQo1TQmzm6ztmOcY",
             authDomain: "rootsage-93b81.firebaseapp.com",
@@ -233,6 +255,8 @@
         const IconBook = (props) => (<svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20h-4.5"/><path d="M16 3.5V1H9.5a2.5 2.5 0 0 0 0 5h6.5"/></svg>);
         const IconUser = (props) => (<svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>);
         const IconList = (props) => (<svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="8" x2="21" y1="6" y2="6"/><line x1="8" x2="21" y1="12" y2="12"/><line x1="8" x2="21" y1="18" y2="18"/><line x1="3" x2="3.01" y1="6" y2="6"/><line x1="3" x2="3.01" y1="12" y2="12"/><line x1="3" x2="3.01" y1="18" y2="18"/></svg>);
+        const IconGoogle = (props) => (<svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M22.56 12.03c0-.75-.07-1.48-.2-2.18h-10.4v4.16h5.92c-.26 1.37-.89 2.58-1.78 3.58l3.1 2.39c1.7-1.57 2.68-3.87 2.68-6.05z" fill="#4285f4"/><path d="M12.03 23c2.75 0 5.16-.91 6.88-2.46l-3.1-2.39c-.85.57-1.92.89-3.78.89-2.92 0-5.41-1.97-6.3-4.63l-3.15 2.45C5.17 21.01 8.35 23 12.03 23z" fill="#34a853"/><path d="M5.73 14.93c-.22-.64-.34-1.32-.34-2.02s.12-1.38.34-2.02V8.45H2.58c-.7 1.4-.7 3.06 0 4.46l3.15 2.02z" fill="#fbbc05"/><path d="M12.03 5.09c1.65 0 3.12.57 4.29 1.62l2.76-2.76C17.18 2.02 14.85 1 12.03 1c-3.68 0-6.86 1.99-8.75 4.95l3.15 2.45c.89-2.66 3.38-4.63 6.3-4.63z" fill="#ea4335"/>
+                                </svg>);
 
 
         const EdibilityBadge = ({ status }) => {
@@ -381,8 +405,10 @@
 
             // --- Data Handlers ---
 
+            // Handles profile creation for anonymous users (or existing signed-in users)
             const handleCreateProfile = async (name) => {
                 if (!userId || !firestore || !F.setDoc) return; 
+                setIsLoading(true);
                 try {
                     const profilePath = `artifacts/${appId}/users/${userId}/profile/data`;
                     const profileRef = F.doc(firestore, profilePath);
@@ -397,9 +423,61 @@
                 } catch (e) {
                     console.error("Error creating profile:", e);
                     setError("Failed to create profile.");
+                } finally {
+                    setIsLoading(false);
                 }
             };
             
+            // Handles Sign in with Google
+            const handleGoogleSignIn = async () => {
+                if (!authenticator || !F.GoogleAuthProvider || !F.signInWithPopup || !F.getDoc) {
+                    setError("Sign-In components are not fully loaded.");
+                    return;
+                }
+                setIsLoading(true);
+                setError(null);
+                try {
+                    const provider = new F.GoogleAuthProvider();
+                    const result = await F.signInWithPopup(authenticator, provider);
+                    
+                    const user = result.user;
+                    console.log("Google user signed in:", user.uid);
+                    
+                    // Check if a profile exists for this new or existing signed-in user
+                    const profilePath = `artifacts/${appId}/users/${user.uid}/profile/data`;
+                    const profileRef = F.doc(firestore, profilePath); 
+                    
+                    const docSnap = await F.getDoc(profileRef); 
+                    
+                    if (!docSnap.exists()) {
+                        // Create a new profile using user's Google info
+                        await F.setDoc(profileRef, {
+                            name: user.displayName || 'Explorer',
+                            email: user.email || 'N/A',
+                            photoURL: user.photoURL || null,
+                            joinedDate: F.serverTimestamp(),
+                            plantsIdentified: 0,
+                            badges: ["Novice Sprout"],
+                            userId: user.uid,
+                            hasAcceptedDisclaimer: false, 
+                        });
+                        console.log("New profile created for Google user.");
+                    } else {
+                        console.log("Existing profile loaded for Google user.");
+                    }
+
+                } catch (e) {
+                    console.error("Google Sign-In failed:", e);
+                    if (e.code === 'auth/popup-closed-by-user') {
+                        setError("Sign-in cancelled by user.");
+                    } else {
+                        setError(`Sign-in failed: ${e.message}`);
+                    }
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+
             const handleAcceptDisclaimer = async () => {
                 if (!userId || !firestore || !F.setDoc) return; 
                 setIsLoading(true);
@@ -594,24 +672,51 @@
                     <div className="p-6 h-full flex flex-col justify-center items-center text-center">
                         <IconUser className="w-12 h-12 text-green-600 mb-4" />
                         <h2 className="text-2xl font-bold text-gray-800 mb-2">Welcome to RootSage!</h2>
-                        <p className="text-gray-600 mb-6">Let's set up your profile for gamification.</p>
+                        <p className="text-gray-600 mb-6">Create a profile to save your plant discoveries.</p>
                         
-                        <input
-                            type="text"
-                            placeholder="Enter your RootSage Name"
-                            value={name}
-                            onChange={(e) => setName(e.target.value)}
-                            className="w-full p-3 mb-4 border-2 border-green-300 rounded-lg focus:ring-green-500 focus:border-green-500"
-                            inputMode="text"
-                            autoComplete="off" 
-                        />
-                        <button
-                            onClick={() => handleCreateProfile(name)}
-                            disabled={!name.trim()}
-                            className="w-full py-3 bg-green-600 text-white font-semibold rounded-lg shadow-md hover:bg-green-700 transition-colors disabled:opacity-50"
-                        >
-                            Start Exploring
-                        </button>
+                        <div className="w-full space-y-4">
+                            {/* Google Sign-In Button */}
+                            <button
+                                onClick={handleGoogleSignIn}
+                                disabled={isLoading}
+                                className="w-full py-3 bg-blue-600 text-white font-semibold rounded-lg shadow-md hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center justify-center space-x-2"
+                            >
+                                {isLoading ? (
+                                    'Signing In...'
+                                ) : (
+                                    <>
+                                        <IconGoogle className="w-5 h-5" />
+                                        <span>Sign In with Google</span>
+                                    </>
+                                )}
+                            </button>
+                            
+                            <div className="flex items-center">
+                                <hr className="flex-grow border-gray-300" />
+                                <span className="mx-4 text-sm text-gray-500">OR</span>
+                                <hr className="flex-grow border-gray-300" />
+                            </div>
+
+                            {/* Anonymous Sign-In Input */}
+                            <input
+                                type="text"
+                                placeholder="Enter a temporary RootSage Name"
+                                value={name}
+                                onChange={(e) => setName(e.target.value)}
+                                className="w-full p-3 border-2 border-green-300 rounded-lg focus:ring-green-500 focus:border-green-500"
+                                inputMode="text"
+                                autoComplete="off" 
+                                disabled={isLoading}
+                            />
+                            <button
+                                onClick={() => handleCreateProfile(name)}
+                                disabled={!name.trim() || isLoading}
+                                className="w-full py-3 bg-green-600 text-white font-semibold rounded-lg shadow-md hover:bg-green-700 transition-colors disabled:opacity-50"
+                            >
+                                Start Anonymously
+                            </button>
+                            {error && <p className="mt-4 text-sm text-red-500">{error}</p>}
+                        </div>
                     </div>
                 );
             };
@@ -666,7 +771,7 @@
                         <div className="text-center pb-4 border-b">
                             <IconUser className="w-16 h-16 text-green-600 mx-auto mb-2 p-3 bg-green-100 rounded-full" />
                             <h2 className="text-3xl font-bold text-gray-900">{userProfile.name}</h2>
-                            <p className="text-sm text-gray-500">Member ID: {userId.substring(0, 8)}...</p>
+                            <p className="text-sm text-gray-500">Member ID: {userId}</p>
                         </div>
 
                         <div className="grid grid-cols-2 gap-4 text-center">
