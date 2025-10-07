@@ -1,6 +1,6 @@
 const CACHE_NAME = 'rootsage-v1';
 const APP_SHELL_URLS = [
-    '/', // Main HTML
+    '/', // Caches the main HTML file
     '/manifest.json',
     '/icons/icon-192x192.png',
     '/icons/icon-512x512.png',
@@ -13,19 +13,21 @@ const APP_SHELL_URLS = [
     'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js',
     'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js',
 ];
-
+// Installation event: Caching the App Shell
 self.addEventListener('install', (event) => {
     event.waitUntil(
-        caches.open(CACHE_NAME).then((cache) => {
-            console.log('[Service Worker] Caching app shell');
-            return cache.addAll(APP_SHELL_URLS);
-        }).catch(err => {
-            console.error('[Service Worker] Failed to cache app shell:', err);
-        })
+        caches.open(CACHE_NAME)
+            .then((cache) => {
+                console.log('[Service Worker] Caching app shell');
+                return cache.addAll(APP_SHELL_URLS);
+            })
+            .catch(err => {
+                console.error('[Service Worker] Failed to cache app shell:', err);
+            })
     );
     self.skipWaiting();
 });
-
+// Activation event: Cleaning up old caches
 self.addEventListener('activate', (event) => {
     const cacheWhitelist = [CACHE_NAME];
     event.waitUntil(
@@ -42,17 +44,22 @@ self.addEventListener('activate', (event) => {
     );
     self.clients.claim();
 });
-
+// Fetch event: Serve content from cache first, fall back to network
 self.addEventListener('fetch', (event) => {
     const isAppShell = APP_SHELL_URLS.some(url => event.request.url.includes(url) || event.request.url.endsWith(url.replace('/', '')));
     if (isAppShell || event.request.mode === 'navigate') {
         event.respondWith(
             caches.match(event.request)
-                .then((response) => response || fetch(event.request))
+                .then((response) => {
+                    if (response) {
+                        return response;
+                    }
+                    return fetch(event.request);
+                })
                 .catch(error => {
                     console.error('[Service Worker] Fetch failed:', error);
                 })
         );
     }
-    // Other API/network requests: bypass cache, go to network
-};
+    // Allow other requests (like API calls) to proceed normally (network only)
+});
