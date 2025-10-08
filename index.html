@@ -1,58 +1,4 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>RootSage Plant Identifier (PWA)</title>
-    <!-- PWA Requirements: Define how the app should look on a home screen -->
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black">
-    <meta name="theme-color" content="#10b981">
-    
-    <!-- Load Tailwind CSS, React, ReactDOM, and Babel -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-    <!-- Babel is needed to compile JSX in the browser for this single-file setup -->
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    
-    <style>
-        /* Apply Inter font and basic smoothing */
-        body {
-            font-family: 'Inter', sans-serif;
-            background-color: #f3f4f6;
-            margin: 0;
-            padding: 0;
-            display: flex;
-            justify-content: center;
-            min-height: 100vh;
-        }
-        #root {
-            width: 100%;
-            max-width: 600px; /* Max width for a clean mobile container */
-            height: 100vh;
-            background-color: white;
-            box-shadow: 0 0 20px rgba(0, 0, 0, 0.1);
-            display: flex;
-            flex-direction: column;
-        }
-        /* Style the modal overlay */
-        .modal-overlay {
-            background-color: rgba(0, 0, 0, 0.6);
-            backdrop-filter: blur(2px);
-        }
-        /* Hide scrollbar for cleaner look */
-        .overflow-y-auto::-webkit-scrollbar {
-            display: none;
-        }
-        .overflow-y-auto {
-            -ms-overflow-style: none;  /* IE and Edge */
-            scrollbar-width: none;  /* Firefox */
-        }
-    </style>
-
-    <!-- Firebase SDK Imports and Initialization (FIXED) -->
-    <script type="module">
+<script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { 
             getAuth, 
@@ -73,97 +19,77 @@
             serverTimestamp,
             getDocs,
             query,
-            where,
-            setLogLevel
+            where
         } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        
-        // Ensure logging is set for better debugging visibility
-        // setLogLevel('Debug'); // Uncomment for Firestore debugging
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
 
-        // Global environment variables provided by the canvas environment
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        // Use the global __firebase_config variable (assuming it's a JSON string)
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
-        let app, db, auth;
-        
-        /**
-         * Initializes Firebase, authenticates the user, and sets up global state.
-         */
-        const initializeFirebase = async () => {
-            if (Object.keys(firebaseConfig).length === 0 || !firebaseConfig.apiKey) {
-                console.error("Firebase config is missing or invalid. Using default mock state.");
-                // Provide safe mock state
-                window.FIREBASE_STATE = { 
-                    db: null, 
-                    auth: null, 
-                    appId: appId, 
-                    userId: 'anon-' + crypto.randomUUID(), 
-                    firebaseReady: true,
-                    // Expose Firestore tools needed by React components
-                    firestore: { collection, doc, setDoc, onSnapshot, serverTimestamp, GoogleAuthProvider, signInWithPopup, signOut }
-                };
-                return;
-            }
-
-            try {
-                app = initializeApp(firebaseConfig);
-                db = getFirestore(app);
-                auth = getAuth(app);
-                
-                let authReadyPromise = new Promise(resolve => {
-                    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-                        // If no user, attempt sign-in
-                        if (!user) {
-                            try {
-                                if (initialAuthToken) {
-                                     await signInWithCustomToken(auth, initialAuthToken);
-                                } else {
-                                     await signInAnonymously(auth);
-                                }
-                            } catch (error) {
-                                console.error("Firebase sign-in failed:", error);
-                            }
-                        }
-                        
-                        // After sign-in attempt (or if already signed in), set global state
-                        const userId = auth.currentUser?.uid || 'anon-' + crypto.randomUUID();
-                        
-                        window.FIREBASE_STATE = { 
-                            db, 
-                            auth, 
-                            appId, 
-                            userId, 
-                            firebaseReady: true, 
-                            firestore: { collection, doc, setDoc, onSnapshot, serverTimestamp, GoogleAuthProvider, signInWithPopup, signOut }
-                        };
-                        console.log("Firebase initialized and ready. User ID:", userId);
-
-                        unsubscribe(); // Stop listening after initial sign-in
-                        resolve();
-                    });
-                });
-                
-                await authReadyPromise;
-
-            } catch (error) {
-                console.error("Firebase initialization failed:", error);
-                window.FIREBASE_STATE = { db: null, auth: null, appId: appId, userId: 'anon-error', firebaseReady: true };
-            }
+        // --- SECURITY FIX: Use Placeholder for GitHub Actions Injection ---
+        const SECURE_FIREBASE_CONFIG = {
+            apiKey: "$$FIREBASE_API_KEY$$",
+            authDomain: "rootsage-93b81.firebaseapp.com",
+            projectId: "rootsage-93b81",
+            storageBucket: "rootsage-93b81.firebasestorage.app",
+            messagingSenderId: "1030097757643",
+            appId: "1:1030097757643:web:60af064ed2e83c78fd824e"
         };
+        // ------------------------------------------------------------------
 
-        // Set initial state and start initialization
-        window.FIREBASE_STATE = { db: null, auth: null, appId: appId, userId: null, firebaseReady: false };
-        initializeFirebase();
+        // Global variables provided by the environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        
+        // Initialize Firebase
+        const firebaseApp = initializeApp(SECURE_FIREBASE_CONFIG);
+        const db = getFirestore(firebaseApp);
+        const auth = getAuth(firebaseApp);
+        
+        // Expose Firebase functions to the global window object for use in the Babel script
+        window.auth = auth;
+        window.db = db;
+        window.onAuthStateChanged = onAuthStateChanged;
+        window.signInWithPopup = signInWithPopup;
+        window.GoogleAuthProvider = GoogleAuthProvider;
+        window.signOut = signOut;
+        window.collection = collection;
+        window.doc = doc;
+        window.setDoc = setDoc;
+        window.getDoc = getDoc;
+        window.onSnapshot = onSnapshot;
+        window.serverTimestamp = serverTimestamp;
+        window.getDocs = getDocs;
+        window.query = query;
+        window.where = where;
+        
+        // NEW: Flag to signal React that Firebase setup is complete
+        window.FIREBASE_LOADED = true;
+        
+        // NEW: Use a custom event to notify React that it's safe to start
+        document.dispatchEvent(new CustomEvent('firebase-ready'));
 
+        setLogLevel('Debug');
     </script>
-</head>
-<body>
+
+
     <div id="root"></div>
 
     <script type="text/babel">
-        // ... (Your React, hooks, and components code goes here. Not repeating for brevity)
+        // ... all your existing React/Babel code ...
+        
+        // --- NEW React Rendering Logic ---
+        
+        const tryRenderApp = () => {
+            if (window.FIREBASE_LOADED) {
+                ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+            }
+        };
+
+        // Attempt to render immediately if Firebase loaded fast
+        tryRenderApp();
+
+        // Listen for the custom event in case Firebase loading lagged
+        document.addEventListener('firebase-ready', tryRenderApp);
+        
     </script>
 </body>
 </html>
