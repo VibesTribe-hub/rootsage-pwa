@@ -12,7 +12,7 @@
     <!-- Load Tailwind CSS, React, ReactDOM, and Babel -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <!-- Babel is needed to compile JSX in the browser for this single-file setup -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     
@@ -289,7 +289,8 @@
         // --- Consolidated App Provider ---
 
         const AppProvider = ({ children }) => {
-            const [currentPage, setCurrentPage] = useState(PAGES.SPLASH); // UI State
+            // FIX: Start directly on HOME to bypass potential issues with initial splash/disclaimer states
+            const [currentPage, setCurrentPage] = useState(PAGES.HOME); 
             // NEW STATE: To hold data for the plant currently being viewed (e.g., after identification or clicking in library)
             const [selectedPlant, setSelectedPlant] = useState(null); 
             const [db, setDb] = useState(null); // Firebase State
@@ -346,7 +347,7 @@
                 appId: window.firebase ? window.firebase.appId : 'default-app-id',
                 firestore: window.firebase ? window.firebase.firestore : null,
                 serverTimestamp: window.firebase ? window.firebase.serverTimestamp : null
-            }), [currentPage, setCurrentPage, selectedPlant, db, auth, userId, isAuthReady]);
+            }), [currentPage, setSelectedPlant, selectedPlant, db, auth, userId, isAuthReady]);
 
             return (
                 <AppContext.Provider value={value}>
@@ -385,6 +386,7 @@
                     const docRef = await firestore.addDoc(collectionRef, newPlant);
                     
                     // Set the newly created plant as selected
+                    // We need to simulate the server timestamp for immediate display
                     setSelectedPlant({ ...newPlant, id: docRef.id, createdAt: new Date() });
                     return { ...newPlant, id: docRef.id };
                 } catch (e) {
@@ -568,80 +570,6 @@
             );
         };
 
-        const SplashPage = () => {
-            const { setCurrentPage } = useAppState(); 
-            
-            useEffect(() => {
-                const timer = setTimeout(() => {
-                    setCurrentPage(PAGES.DISCLAIMER);
-                }, 3000); 
-                return () => clearTimeout(timer);
-            }, [setCurrentPage]);
-
-            return (
-                <div className="flex flex-col items-center justify-center h-screen bg-gradient-to-br from-green-500 to-green-700 p-8">
-                    <IconLeaf className="w-20 h-20 text-white animate-bounce" />
-                    <h1 className="text-5xl font-extrabold text-white mt-4 tracking-tighter">RootSage</h1>
-                    <p className="text-white text-opacity-80 mt-2 text-xl italic">Nature, Identified.</p>
-                </div>
-            );
-        };
-
-        const DisclaimerPage = () => {
-            const { setCurrentPage } = useAppState();
-
-            const disclaimerItems = [
-                {
-                    icon: IconShieldCheck,
-                    title: "Identification Accuracy",
-                    description: "RootSage uses advanced AI, but identification is not 100% guaranteed. Always confirm with a local expert before ingesting or handling unknown plants.",
-                },
-                {
-                    icon: IconDroplet,
-                    title: "Toxicity Disclaimer",
-                    description: "Identification is not a measure of toxicity. Do not consume any part of an identified plant based solely on this app's results.",
-                },
-                {
-                    icon: IconSun,
-                    title: "Regional Variance",
-                    description: "Plant characteristics can vary significantly by region and season. The app's results are a guide, not a definitive botanical resource.",
-                },
-            ];
-
-            return (
-                <div className="p-6 h-full flex flex-col justify-between max-w-lg mx-auto">
-                    <div>
-                        <h2 className="text-3xl font-extrabold text-green-700 mb-4">Important Disclaimer</h2>
-                        <p className="text-gray-600 mb-8">Please read the following carefully before proceeding to use RootSage.</p>
-
-                        <div className="space-y-6">
-                            {disclaimerItems.map((item, index) => {
-                                const Icon = item.icon;
-                                return (
-                                    <div key={index} className="flex items-start p-4 bg-green-50 rounded-xl shadow-sm border border-green-200">
-                                        <Icon className="w-6 h-6 text-green-600 flex-shrink-0 mt-1" />
-                                        <div className="ml-4">
-                                            <h3 className="font-semibold text-lg text-gray-800">{item.title}</h3>
-                                            <p className="text-sm text-gray-600">{item.description}</p>
-                                        </div>
-                                    </div>
-                                );
-                            })}
-                        </div>
-                    </div>
-
-                    <div className="pt-8">
-                        <button
-                            onClick={() => setCurrentPage(PAGES.HOME)}
-                            className="w-full bg-green-600 text-white py-3 rounded-xl font-bold text-lg hover:bg-green-700 transition duration-150 shadow-lg"
-                        >
-                            I Understand and Agree
-                        </button>
-                    </div>
-                </div>
-            );
-        };
-
         const HomePage = () => {
             const { setCurrentPage, setSelectedPlant } = useAppState();
             const { plants, loading } = useUserPlants();
@@ -708,7 +636,12 @@
                                     >
                                         <div className="w-10 h-10 bg-green-200 rounded-full flex items-center justify-center flex-shrink-0 overflow-hidden">
                                             {/* Placeholder for image */}
-                                            <IconLeaf className="w-5 h-5 text-green-700"/>
+                                            <img 
+                                                src={plant.imageURL || "https://placehold.co/40x40/a7f3d0/065f46?text=L"} 
+                                                alt={plant.name}
+                                                className="w-full h-full object-cover"
+                                                onError={(e) => {e.target.onerror = null; e.target.src = "https://placehold.co/40x40/a7f3d0/065f46?text=L";}}
+                                            />
                                         </div>
                                         <div className="ml-4 flex-grow">
                                             <p className="font-semibold text-gray-800 truncate">{plant.name || 'Unidentified Plant'}</p>
@@ -821,7 +754,7 @@
                 return () => {
                    stopCamera();
                 };
-            }, [startCamera, imagePreviewUrl]); // Depend on startCamera and imagePreviewUrl
+            }, [startCamera, imagePreviewUrl, stopCamera]); // Added stopCamera dependency
 
             
             // 2. Image Capture from Live Stream
@@ -1131,24 +1064,6 @@
         };
 
 
-        const PlaceholderPage = ({ title, icon: Icon, description }) => {
-            const { setCurrentPage } = useAppState();
-
-            return (
-                <div className="flex flex-col items-center justify-center p-6 text-center h-full max-w-lg mx-auto">
-                    <Icon className="w-16 h-16 text-green-500 mb-4" />
-                    <h2 className="text-3xl font-bold text-gray-800 mb-3">{title}</h2>
-                    <p className="text-gray-600 mb-8">{description}</p>
-                    <button
-                        onClick={() => setCurrentPage(PAGES.HOME)}
-                        className="bg-green-600 text-white py-2 px-6 rounded-xl font-semibold hover:bg-green-700 transition duration-150 shadow-md"
-                    >
-                        Go to Home
-                    </button>
-                </div>
-            );
-        };
-
         const PlantDetailPage = () => {
             const { setCurrentPage, selectedPlant, setSelectedPlant } = useAppState();
             const { deletePlant } = usePlantActions();
@@ -1186,14 +1101,25 @@
             return (
                 <div className="p-4 max-w-lg mx-auto">
                     <div className="bg-white rounded-2xl shadow-xl overflow-hidden mb-4">
+                        {/* Back Button */}
+                        <button
+                            onClick={() => setCurrentPage(PAGES.LIBRARY)}
+                            className="absolute top-5 left-5 p-2 rounded-full bg-black/50 text-white hover:bg-black/70 z-10"
+                            aria-label="Back to Library"
+                        >
+                            <IconX className="w-6 h-6 transform rotate-45"/>
+                        </button>
+
                         {/* Image/Header */}
-                        <img 
-                            // Use the placeholder URL provided by the AI response
-                            src={plant.imageURL || "https://placehold.co/400x300/e0f2f1/065f46?text=Identified+Plant"} 
-                            alt={plant.name} 
-                            className="w-full h-64 object-cover"
-                            onError={(e) => { e.target.onerror = null; e.target.src = "https://placehold.co/400x300/e0f2f1/065f46?text=Image+Not+Found"; }}
-                        />
+                        <div className="relative">
+                            <img 
+                                // Use the placeholder URL provided by the AI response
+                                src={plant.imageURL || "https://placehold.co/400x300/e0f2f1/065f46?text=Identified+Plant"} 
+                                alt={plant.name} 
+                                className="w-full h-64 object-cover"
+                                onError={(e) => { e.target.onerror = null; e.target.src = "https://placehold.co/400x300/e0f2f1/065f46?text=Image+Not+Found"; }}
+                            />
+                        </div>
                         
                         <div className="p-6">
                             <h1 className="text-3xl font-extrabold text-green-700">{plant.name || 'Unidentified'}</h1>
@@ -1269,19 +1195,88 @@
                 </div>
             );
         };
+        
+        const LibraryPage = () => {
+            const { setCurrentPage, setSelectedPlant } = useAppState();
+            const { plants, loading } = useUserPlants();
+            
+            const handleViewPlant = (plant) => {
+                setSelectedPlant(plant);
+                setCurrentPage(PAGES.DETAIL);
+            };
 
+            if (loading) return <LoadingSpinner message="Loading your plant library..." />;
+
+            return (
+                <div className="p-4 space-y-4 max-w-lg mx-auto">
+                    <h2 className="text-3xl font-bold text-green-700 mb-6">My Plant Library ({plants.length})</h2>
+                    
+                    {plants.length === 0 ? (
+                        <div className="text-center py-16 text-gray-500 bg-gray-50 rounded-xl shadow-inner">
+                            <IconBookOpen className="w-10 h-10 mx-auto mb-3 text-gray-300"/>
+                            <p className="text-lg font-semibold">No identified plants yet!</p>
+                            <p className="text-sm mt-1">Go to the **Identify** tab to start building your library.</p>
+                            <button 
+                                onClick={() => setCurrentPage(PAGES.CAMERA)}
+                                className="mt-6 bg-green-500 text-white py-2 px-4 rounded-lg text-sm font-medium hover:bg-green-600 transition shadow"
+                            >
+                                Identify My First Plant
+                            </button>
+                        </div>
+                    ) : (
+                        <div className="space-y-3">
+                            {/* Sort by newest first */}
+                            {plants.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).map(plant => (
+                                <div 
+                                    key={plant.id} 
+                                    className="flex items-center p-3 bg-white rounded-xl shadow hover:shadow-md transition cursor-pointer border border-gray-100"
+                                    onClick={() => handleViewPlant(plant)} 
+                                >
+                                    <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center flex-shrink-0 overflow-hidden border-2 border-green-300">
+                                        {/* Use the placeholder imageURL if available */}
+                                        <img 
+                                            src={plant.imageURL || "https://placehold.co/48x48/a7f3d0/065f46?text=L"} 
+                                            alt={plant.name}
+                                            className="w-full h-full object-cover"
+                                            onError={(e) => {e.target.onerror = null; e.target.src = "https://placehold.co/48x48/a7f3d0/065f46?text=L";}}
+                                        />
+                                    </div>
+                                    <div className="ml-4 flex-grow">
+                                        <p className="font-bold text-gray-800 truncate">{plant.name || 'Unidentified Plant'}</p>
+                                        <p className="text-sm text-gray-500">
+                                            {plant.scientificName} 
+                                            <span className={`ml-2 px-2 py-0.5 text-xs rounded-full font-medium ${plant.isToxic ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+                                                {plant.isToxic ? 'Toxic' : 'Safe'}
+                                            </span>
+                                        </p>
+                                    </div>
+                                    <IconX className="w-4 h-4 text-gray-400 ml-2 transform rotate-45"/>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            );
+        };
 
         const PlaceholderPage = ({ title, icon: Icon, description }) => {
-            const { setCurrentPage } = useAppState();
+            const { setCurrentPage, userId } = useAppState();
+            const displayUserId = userId ? `${userId}` : 'N/A';
 
             return (
                 <div className="flex flex-col items-center justify-center p-6 text-center h-full max-w-lg mx-auto">
                     <Icon className="w-16 h-16 text-green-500 mb-4" />
                     <h2 className="text-3xl font-bold text-gray-800 mb-3">{title}</h2>
                     <p className="text-gray-600 mb-8">{description}</p>
+                    {title.includes('User') && (
+                        <div className="mt-4 p-3 bg-gray-100 rounded-xl break-all">
+                            <p className="text-xs font-semibold text-gray-700">Your unique User ID:</p>
+                            <p className="text-sm text-gray-500">{displayUserId}</p>
+                        </div>
+                    )}
                     <button
                         onClick={() => setCurrentPage(PAGES.HOME)}
-                        className="bg-green-600 text-white py-2 px-6 rounded-xl font-semibold hover:bg-green-700 transition duration-150 shadow-md"
+                        className="mt-6 bg-green-600 text-white py-2 px-6 rounded-xl font-semibold hover:bg-green-700 transition duration-150 shadow-md"
                     >
                         Go to Home
                     </button>
@@ -1292,31 +1287,18 @@
         // --- Main App Component ---
 
         const App = () => {
-            const { currentPage, setCurrentPage, isAuthReady, userId, setSelectedPlant } = useAppState(); 
-
-            // Function to set selected plant and navigate to detail
-            const viewPlantDetail = (plant) => {
-                setSelectedPlant(plant);
-                setCurrentPage(PAGES.DETAIL);
-            };
+            const { currentPage, setCurrentPage, isAuthReady, userId } = useAppState(); 
 
             const renderPage = () => {
                 switch (currentPage) {
-                    case PAGES.SPLASH:
-                        return <SplashPage />;
-                    case PAGES.DISCLAIMER:
-                        return <DisclaimerPage />;
                     case PAGES.HOME:
-                        return <HomePage viewPlantDetail={viewPlantDetail} />;
+                        return <HomePage />;
                     case PAGES.CAMERA:
                         return <CameraPage />;
                     case PAGES.LIBRARY:
-                        // The library page needs to be built out to display the Firestore data
-                        return <PlaceholderPage title="My Library" icon={IconBookOpen} description="All your identified plants in one place. This page will soon list all saved plants from Firestore!" />;
+                        return <LibraryPage />;
                     case PAGES.PROFILE:
-                        // Displaying a truncated UUID is appropriate for mobile/UI space. The full ID is in the state.
-                        const displayUserId = userId ? `${userId.substring(0, 8)}...` : 'N/A';
-                        return <PlaceholderPage title={`User: ${displayUserId}`} icon={IconSettings} description={`This is your unique user ID for persistence: ${userId || 'Not signed in'}`} />;
+                        return <PlaceholderPage title={`User Profile`} icon={IconUser} description="This page shows your user information for data persistence." />;
                     case PAGES.STEWARDSHIP:
                         return <PlaceholderPage title="Plant Stewardship" icon={IconHeart} description="Learn how to care for plants and contribute to a healthier planet." />;
                     case PAGES.DETAIL:
@@ -1326,15 +1308,22 @@
                 }
             };
 
+            // This message will now show instead of a white screen if Firebase auth is still initializing
             if (!isAuthReady) {
-                return <LoadingSpinner message="Authenticating and preparing app..." />;
+                return (
+                    <div className="flex flex-col items-center justify-center h-screen bg-gray-50">
+                        <LoadingSpinner message="Authenticating and preparing app..."/>
+                        <p className="text-sm text-gray-400 mt-4">If this persists, check console for Firebase connection errors.</p>
+                    </div>
+                );
             }
             
             return (
                 <div className="min-h-screen bg-gray-50 flex justify-center">
                     <div className="w-full max-w-lg flex flex-col min-h-screen relative bg-white shadow-xl overflow-hidden">
                         
-                        {currentPage !== PAGES.SPLASH && currentPage !== PAGES.CAMERA && currentPage !== PAGES.DISCLAIMER && (
+                        {/* Header only visible on non-critical screens */}
+                        {(currentPage !== PAGES.CAMERA) && (
                             <header className="sticky top-0 bg-white p-4 border-b border-gray-200 flex items-center justify-between z-10">
                                 <h1 className="text-xl font-bold text-green-700 flex items-center">
                                     <IconLeaf className="w-6 h-6 mr-1" /> RootSage
@@ -1348,16 +1337,18 @@
                             </header>
                         )}
 
-                        <main className={`flex-grow overflow-y-auto ${currentPage !== PAGES.SPLASH && currentPage !== PAGES.STEWARDSHIP && 'mb-16'} ${currentPage === PAGES.SPLASH || currentPage === PAGES.STEWARDSHIP ? 'h-screen' : 'pb-16'}`}>
+                        {/* Main content area. Removed splash/disclaimer logic. Added padding for navbar */}
+                        <main className={`flex-grow overflow-y-auto pb-16`}>
                             {renderPage()}
                         </main>
 
-                        {currentPage !== PAGES.SPLASH && currentPage !== PAGES.DISCLAIMER && <NavBar currentPage={currentPage} setCurrentPage={setCurrentPage} />}
+                        <NavBar currentPage={currentPage} setCurrentPage={setCurrentPage} />
                     </div>
                 </div>
             );
         };
 
+        // Ensure the App is rendered after the script is loaded
         ReactDOM.createRoot(document.getElementById('root')).render(<AppProvider><App /></AppProvider>);
 
     </script>
