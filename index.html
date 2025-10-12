@@ -120,7 +120,9 @@
             width: 100%;
             height: 100%;
             object-fit: cover; /* Ensures video fills the area without distortion */
-            transform: scaleX(-1); /* Flips the video horizontally for a "selfie" effect, but this can be removed for the 'environment' camera */
+            /* Flip the video only if using the 'user' (front) camera. 
+               We are requesting 'environment' (back) camera, so typically no flip is needed. 
+               We will keep the flip removed here for an accurate back camera view. */
         }
         /* Style for the canvas used to capture the frame (hidden) */
         .capture-canvas {
@@ -361,6 +363,7 @@
         const getPath = (db, appId, userId, collectionName, docId) => {
             const firestore = window.firebase.firestore;
             if (!firestore) return null;
+            // Private data path: /artifacts/{appId}/users/{userId}/plants/{documentId}
             const path = `artifacts/${appId}/users/${userId}/${collectionName}`;
             return docId ? firestore.doc(db, path, docId) : firestore.collection(db, path);
         };
@@ -708,25 +711,21 @@
             const [isLoading, setIsLoading] = useState(false);
             const [error, setError] = useState(null);
 
-            // 1. Setup Camera Stream
-            useEffect(() => {
-                // Only try to start the camera if it's the active page and not already streaming
-                if (videoRef.current && !stream && !isCameraActive && !imagePreviewUrl) {
-                    startCamera();
+            // Function to stop the current stream (used for cleanup and before capture)
+            const stopCamera = useCallback(() => {
+                if (stream) {
+                    stream.getTracks().forEach(track => track.stop());
+                    setStream(null);
                 }
-                
-                // Cleanup function
-                return () => {
-                    if (stream) {
-                        stream.getTracks().forEach(track => track.stop());
-                        setStream(null);
-                        setIsCameraActive(false);
-                    }
-                };
-            }, [videoRef.current]); // Re-run if videoRef is set/unset
+                setIsCameraActive(false);
+            }, [stream]);
 
-            const startCamera = async () => {
+            // 1. Setup Camera Stream
+            const startCamera = useCallback(async () => {
+                // Clear any previous error states and ensure old stream is stopped
                 setPermissionError(null);
+                stopCamera(); 
+
                 try {
                     // Request the environment-facing (back) camera
                     const constraints = { video: { facingMode: { exact: "environment" } } };
@@ -735,7 +734,8 @@
                     // Attach stream to video element
                     if (videoRef.current) {
                         videoRef.current.srcObject = newStream;
-                        videoRef.current.play();
+                        // Use .play() on load for the video element
+                        // videoRef.current.play(); // No need to explicitly call play here as autoPlay is set
                     }
                     
                     setStream(newStream);
@@ -743,10 +743,24 @@
                 } catch (err) {
                     console.error("Error accessing camera: ", err);
                     // This error most often happens if permission is denied or no camera is found
-                    setPermissionError("Camera access denied or device does not support `environment` camera.");
+                    setPermissionError("Camera access denied or device does not support 'environment' camera. You can still upload a photo.");
                     setIsCameraActive(false);
                 }
-            };
+            }, [stopCamera]);
+            
+            // Effect to manage camera lifecycle when component mounts or unmounts/updates
+            useEffect(() => {
+                // Attempt to start camera only on mount or when returning from preview/error state
+                if (!imagePreviewUrl && !isCameraActive) {
+                    startCamera();
+                }
+                
+                // Cleanup function: ensures camera stream is stopped when component unmounts
+                return () => {
+                   stopCamera();
+                };
+            }, [startCamera, imagePreviewUrl]); // Depend on startCamera and imagePreviewUrl
+
             
             // 2. Image Capture from Live Stream
             const captureImage = () => {
@@ -755,11 +769,9 @@
                     return;
                 }
 
-                // Stop video tracks (pauses the camera)
-                stream.getTracks().forEach(track => track.stop());
-                setStream(null);
-                setIsCameraActive(false);
-
+                // Pause and stop video tracks
+                videoRef.current.pause();
+                stopCamera(); 
 
                 const video = videoRef.current;
                 const canvas = canvasRef.current;
@@ -790,11 +802,7 @@
                 const file = event.target.files[0];
                 if (file) {
                     // Stop camera if it was running
-                    if(stream) {
-                        stream.getTracks().forEach(track => track.stop());
-                        setStream(null);
-                        setIsCameraActive(false);
-                    }
+                    stopCamera();
 
                     setError(null);
                     if (file.size > 5 * 1024 * 1024) {
@@ -823,7 +831,7 @@
                 setBase64Image(null);
                 setMimeType(null);
                 setError(null);
-                startCamera(); // Restart camera immediately
+                // Camera will attempt to restart via the useEffect dependency on imagePreviewUrl
             };
 
             // 5. Trigger File Input for Gallery
@@ -908,11 +916,10 @@
                     console.error("Fetch/API Error:", e);
                 } finally {
                     setIsLoading(false);
-                    // Reset to initial state and restart camera when done
+                    // Reset to initial state after processing (useEffect will handle camera restart)
                     setImagePreviewUrl(null);
                     setBase64Image(null);
                     setMimeType(null);
-                    startCamera();
                 }
             };
             
@@ -929,12 +936,12 @@
             } else if (permissionError) {
                 // Show permission error message
                 mainContent = (
-                    <div className="text-center text-red-500 p-4">
+                    <div className="text-center text-red-500 p-4 flex flex-col items-center justify-center h-full">
                         <IconX className="w-10 h-10 mx-auto mb-2"/>
                         <p className="font-semibold text-lg">Camera Unavailable</p>
                         <p className="text-sm mt-1">{permissionError}</p>
-                        <button onClick={startCamera} className="mt-4 text-green-600 font-semibold">
-                            Try Requesting Access Again
+                        <button onClick={startCamera} className="mt-4 text-green-600 font-semibold flex items-center">
+                            <IconCamera className="w-4 h-4 mr-1"/> Try Requesting Access Again
                         </button>
                     </div>
                 );
@@ -942,7 +949,7 @@
                  // Show the live video stream
                 mainContent = (
                     <>
-                        <video ref={videoRef} className="camera-video" playsInline autoPlay muted />
+                        <video ref={videoRef} className="camera-video" playsInline autoPlay />
                         {/* Hidden canvas for image capture */}
                         <canvas ref={canvasRef} className="capture-canvas" />
                     </>
@@ -990,7 +997,7 @@
                     <div className="w-full mt-6 space-y-4">
                         {!imagePreviewUrl ? (
                             // Buttons when live camera is showing or preparing
-                            <div className="flex gap-4 items-center justify-center">
+                            <div className="flex gap-4 items-center justify-center relative">
                                 {isCameraActive ? (
                                     <>
                                         {/* Capture Button - Only visible when camera stream is active */}
@@ -1010,21 +1017,14 @@
                                     </>
                                 ) : (
                                     // Fallback buttons when camera is not active (due to error or user not having camera)
+                                    // This set of buttons focuses on the "Upload" fallback when the camera fails
                                     <>
                                         <button
-                                            onClick={startCamera}
-                                            className="flex-1 w-full py-3 rounded-xl font-bold text-lg transition duration-150 flex items-center justify-center shadow-md bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
-                                            disabled={permissionError === null}
-                                        >
-                                            <IconCamera className="w-5 h-5 mr-2" />
-                                            Activate Camera
-                                        </button>
-                                        <button
                                             onClick={handleFileClick}
-                                            className="flex-1 w-full py-3 rounded-xl font-bold text-lg transition duration-150 flex items-center justify-center shadow-md bg-gray-200 text-gray-700 hover:bg-gray-300"
+                                            className="flex-1 w-full py-3 rounded-xl font-bold text-lg transition duration-150 flex items-center justify-center shadow-md bg-green-600 text-white hover:bg-green-700"
                                         >
                                             <IconUpload className="w-5 h-5 mr-2" />
-                                            Upload Photo
+                                            Upload Photo from Gallery
                                         </button>
                                     </>
                                 )}
@@ -1222,6 +1222,7 @@
                     case PAGES.CAMERA:
                         return <CameraPage />;
                     case PAGES.LIBRARY:
+                        // The library page needs to be built out to display the Firestore data
                         return <PlaceholderPage title="My Library" icon={IconBookOpen} description="All your identified plants in one place. This page will soon list all saved plants from Firestore!" />;
                     case PAGES.PROFILE:
                         return <PlaceholderPage title={`User: ${userId}`} icon={IconSettings} description={`This is your unique user ID for persistence: ${userId.substring(0, 8)}...`} />;
