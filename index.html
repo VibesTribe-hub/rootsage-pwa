@@ -12,7 +12,7 @@
     <!-- Load Tailwind CSS, React, ReactDOM, and Babel -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react.development.js"></script>
     <!-- Babel is needed to compile JSX in the browser for this single-file setup -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     
@@ -120,9 +120,6 @@
             width: 100%;
             height: 100%;
             object-fit: cover; /* Ensures video fills the area without distortion */
-            /* Flip the video only if using the 'user' (front) camera. 
-               We are requesting 'environment' (back) camera, so typically no flip is needed. 
-               We will keep the flip removed here for an accurate back camera view. */
         }
         /* Style for the canvas used to capture the frame (hidden) */
         .capture-canvas {
@@ -231,7 +228,7 @@
 
         const IconSettings = (props) => (
             <BaseIcon {...props}>
-                <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.44a2 2 0 0 1-2 2h-.44a2 2 0 0 0-2 2v.44a2 2 0 0 1-2 2h-.44a2 2 0 0 0-2 2v.44a2 2 0 0 1 2 2h.44a2 2 0 0 0 2 2v.44a2 2 0 0 1 2 2h.44a2 2 0 0 0 2 2v.44a2 2 0 0 1 2 2h.44a2 2 0 0 0 2-2v-.44a2 2 0 0 1 2-2h.44a2 2 0 0 0 2-2v-.44a2 2 0 0 1 2-2h.44a2 2 0 0 0-2-2v-.44a2 2 0 0 1-2-2h-.44a2 2 0 0 0-2-2v-.44a2 2 0 0 1-2-2h-.44a2 2 0 0 0-2-2z" />
+                <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.44a2 2 0 0 1-2 2h-.44a2 2 0 0 0-2 2v.44a2 2 0 0 1-2 2h-.44a2 2 0 0 0-2 2v.44a2 2 0 0 1 2 2h.44a2 2 0 0 0 2 2v.44a2 2 0 0 1 2 2h.44a2 2 0 0 0 2-2v-.44a2 2 0 0 1 2-2h.44a2 2 0 0 0 2-2v-.44a2 2 0 0 1 2-2h.44a2 2 0 0 0-2-2v-.44a2 2 0 0 1-2-2h-.44a2 2 0 0 0-2-2v-.44a2 2 0 0 1-2-2h-.44a2 2 0 0 0-2-2z" />
                 <circle cx="12" cy="12" r="3" />
             </BaseIcon>
         );
@@ -473,6 +470,61 @@
                     await new Promise(resolve => setTimeout(resolve, delay));
                 }
             }
+        };
+        
+        /**
+         * Resizes a data URL (image) to a specified maximum width/height and returns the new base64 data.
+         * This solves the large file size issue by downscaling images on the client side before API call.
+         * @param {string} dataUrl - The original base64 image data URL (e.g., 'data:image/jpeg;base64,...').
+         * @param {number} maxWidth - Maximum width for the resized image.
+         * @param {number} maxHeight - Maximum height for the resized image.
+         * @returns {Promise<{dataURL: string, base64: string, mimeType: string}>} - The resized image data.
+         */
+        const resizeImage = (dataUrl, maxWidth = 1024, maxHeight = 1024) => {
+            return new Promise((resolve) => {
+                const img = new Image();
+                img.onload = () => {
+                    let width = img.width;
+                    let height = img.height;
+
+                    // Determine scaling factor
+                    if (width > height) {
+                        if (width > maxWidth) {
+                            height *= maxWidth / width;
+                            width = maxWidth;
+                        }
+                    } else {
+                        if (height > maxHeight) {
+                            width *= maxHeight / height;
+                            height = maxHeight;
+                        }
+                    }
+
+                    // Create canvas for drawing the resized image
+                    const canvas = document.createElement('canvas');
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    
+                    // Draw the image scaled to new dimensions
+                    ctx.drawImage(img, 0, 0, width, height);
+                    
+                    // Convert canvas back to data URL, force JPEG for smaller size
+                    const mimeType = 'image/jpeg';
+                    const newQuality = 0.8; // Use 80% quality for good compression
+                    const newDataUrl = canvas.toDataURL(mimeType, newQuality);
+                    
+                    // Extract base64 part
+                    const base64Data = newDataUrl.split(',')[1];
+                    
+                    resolve({
+                        dataURL: newDataUrl,
+                        base64: base64Data,
+                        mimeType: mimeType
+                    });
+                };
+                img.src = dataUrl;
+            });
         };
 
         // --- Components ---
@@ -726,6 +778,13 @@
                 setPermissionError(null);
                 stopCamera(); 
 
+                // Check for media devices support
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    setPermissionError("Your browser does not support media devices.");
+                    setIsCameraActive(false);
+                    return;
+                }
+
                 try {
                     // Request the environment-facing (back) camera
                     const constraints = { video: { facingMode: { exact: "environment" } } };
@@ -734,24 +793,27 @@
                     // Attach stream to video element
                     if (videoRef.current) {
                         videoRef.current.srcObject = newStream;
-                        // Use .play() on load for the video element
-                        // videoRef.current.play(); // No need to explicitly call play here as autoPlay is set
+                        // Start playing the video stream
+                        videoRef.current.play().catch(e => console.error("Video play failed:", e));
                     }
                     
                     setStream(newStream);
                     setIsCameraActive(true);
                 } catch (err) {
                     console.error("Error accessing camera: ", err);
-                    // This error most often happens if permission is denied or no camera is found
-                    setPermissionError("Camera access denied or device does not support 'environment' camera. You can still upload a photo.");
+                    // Handle common errors like permission denied or no suitable camera found
+                    const msg = err.name === 'NotAllowedError' 
+                        ? "Camera access was denied. Please check your browser's permissions."
+                        : "Camera device not found or inaccessible. You can still upload a photo.";
+                    setPermissionError(msg);
                     setIsCameraActive(false);
                 }
             }, [stopCamera]);
             
-            // Effect to manage camera lifecycle when component mounts or unmounts/updates
+            // Effect to manage camera lifecycle when component mounts or updates
             useEffect(() => {
-                // Attempt to start camera only on mount or when returning from preview/error state
-                if (!imagePreviewUrl && !isCameraActive) {
+                // Start camera if we are on the camera page and no image is in preview
+                if (!imagePreviewUrl) {
                     startCamera();
                 }
                 
@@ -763,14 +825,13 @@
 
             
             // 2. Image Capture from Live Stream
-            const captureImage = () => {
+            const captureImage = async () => {
                 if (!videoRef.current || !canvasRef.current || !stream) {
                     setError("Camera not ready. Please wait or check permissions.");
                     return;
                 }
-
-                // Pause and stop video tracks
-                videoRef.current.pause();
+                
+                // Stop video tracks immediately
                 stopCamera(); 
 
                 const video = videoRef.current;
@@ -784,10 +845,11 @@
                 // Draw the current video frame onto the canvas
                 ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-                // Convert canvas to base64 image data (JPEG format)
+                // Convert canvas to data URL (this implicitly resizes to canvas size)
                 const dataURL = canvas.toDataURL('image/jpeg', 0.9);
                 
-                // Extract base64 and mime type
+                // We will skip the full resize here since canvas drawing is usually sufficient to downsize from high-res sensors.
+                // However, let's keep the logic consistent by converting it to the data structure needed.
                 const base64Data = dataURL.split(',')[1];
                 const type = 'image/jpeg';
                 
@@ -798,30 +860,37 @@
             };
 
             // 3. Image Select from File (Fallback for Gallery Upload)
-            const handleFileSelect = (event) => {
+            const handleFileSelect = async (event) => {
                 const file = event.target.files[0];
-                if (file) {
-                    // Stop camera if it was running
-                    stopCamera();
+                if (!file) return;
 
-                    setError(null);
-                    if (file.size > 5 * 1024 * 1024) {
-                        setError("File is too large (max 5MB).");
-                        return;
-                    }
+                // Stop camera if it was running
+                stopCamera();
+                
+                // Reset error state
+                setError(null);
+                setIsLoading(true);
 
-                    setMimeType(file.type);
+                try {
                     const reader = new FileReader();
                     
-                    reader.onloadend = () => {
-                        const dataURL = reader.result;
-                        const base64Data = dataURL.split(',')[1];
+                    reader.onloadend = async () => {
+                        const originalDataURL = reader.result;
+                        
+                        // --- NEW: Client-side Resizing ---
+                        const resizedData = await resizeImage(originalDataURL);
 
-                        setImagePreviewUrl(dataURL);
-                        setBase64Image(base64Data);
-                        setMimeType(file.type);
+                        setImagePreviewUrl(resizedData.dataURL);
+                        setBase64Image(resizedData.base64);
+                        setMimeType(resizedData.mimeType);
+                        setError(null);
+                        setIsLoading(false);
                     };
                     reader.readAsDataURL(file);
+                } catch (e) {
+                    setError("Could not process file. Ensure it is a valid image.");
+                    console.error("File processing error:", e);
+                    setIsLoading(false);
                 }
             };
             
@@ -837,7 +906,8 @@
             // 5. Trigger File Input for Gallery
             const handleFileClick = () => {
                 if (fileInputRef.current) {
-                    fileInputRef.current.value = null; // Important for onChange to fire on same file re-selection
+                    // Clear the value so selecting the same file triggers onChange
+                    fileInputRef.current.value = null; 
                     fileInputRef.current.click(); 
                 }
             };
@@ -949,6 +1019,7 @@
                  // Show the live video stream
                 mainContent = (
                     <>
+                        {/* We use playsInline and autoPlay for better mobile compatibility */}
                         <video ref={videoRef} className="camera-video" playsInline autoPlay />
                         {/* Hidden canvas for image capture */}
                         <canvas ref={canvasRef} className="capture-canvas" />
@@ -1200,6 +1271,24 @@
         };
 
 
+        const PlaceholderPage = ({ title, icon: Icon, description }) => {
+            const { setCurrentPage } = useAppState();
+
+            return (
+                <div className="flex flex-col items-center justify-center p-6 text-center h-full max-w-lg mx-auto">
+                    <Icon className="w-16 h-16 text-green-500 mb-4" />
+                    <h2 className="text-3xl font-bold text-gray-800 mb-3">{title}</h2>
+                    <p className="text-gray-600 mb-8">{description}</p>
+                    <button
+                        onClick={() => setCurrentPage(PAGES.HOME)}
+                        className="bg-green-600 text-white py-2 px-6 rounded-xl font-semibold hover:bg-green-700 transition duration-150 shadow-md"
+                    >
+                        Go to Home
+                    </button>
+                </div>
+            );
+        };
+
         // --- Main App Component ---
 
         const App = () => {
@@ -1225,7 +1314,9 @@
                         // The library page needs to be built out to display the Firestore data
                         return <PlaceholderPage title="My Library" icon={IconBookOpen} description="All your identified plants in one place. This page will soon list all saved plants from Firestore!" />;
                     case PAGES.PROFILE:
-                        return <PlaceholderPage title={`User: ${userId}`} icon={IconSettings} description={`This is your unique user ID for persistence: ${userId.substring(0, 8)}...`} />;
+                        // Displaying a truncated UUID is appropriate for mobile/UI space. The full ID is in the state.
+                        const displayUserId = userId ? `${userId.substring(0, 8)}...` : 'N/A';
+                        return <PlaceholderPage title={`User: ${displayUserId}`} icon={IconSettings} description={`This is your unique user ID for persistence: ${userId || 'Not signed in'}`} />;
                     case PAGES.STEWARDSHIP:
                         return <PlaceholderPage title="Plant Stewardship" icon={IconHeart} description="Learn how to care for plants and contribute to a healthier planet." />;
                     case PAGES.DETAIL:
@@ -1261,7 +1352,7 @@
                             {renderPage()}
                         </main>
 
-                        {currentPage !== PAGES.SPLASH && currentPage !== PAGES.DISCLAIMER && currentPage !== PAGES.CAMERA && <NavBar currentPage={currentPage} setCurrentPage={setCurrentPage} />}
+                        {currentPage !== PAGES.SPLASH && currentPage !== PAGES.DISCLAIMER && <NavBar currentPage={currentPage} setCurrentPage={setCurrentPage} />}
                     </div>
                 </div>
             );
