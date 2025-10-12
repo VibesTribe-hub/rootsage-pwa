@@ -677,6 +677,11 @@
             const [mimeType, setMimeType] = useState(null);
             const [isLoading, setIsLoading] = useState(false);
             const [error, setError] = useState(null);
+            
+            // --- Refs for direct input interaction ---
+            const cameraInputRef = useRef(null);
+            const fileInputRef = useRef(null);
+            // -----------------------------------------
 
             const handleImageSelect = (event) => {
                 const file = event.target.files[0];
@@ -701,9 +706,26 @@
                 }
             };
             
+            // --- Handlers for button clicks to trigger hidden inputs ---
+            const handleCameraClick = () => {
+                // Important: clear the value to ensure onChange fires even if the same image is chosen
+                if (cameraInputRef.current) {
+                    cameraInputRef.current.value = null; 
+                    cameraInputRef.current.click(); // Programmatically click the hidden input
+                }
+            };
+
+            const handleFileClick = () => {
+                if (fileInputRef.current) {
+                    fileInputRef.current.value = null;
+                    fileInputRef.current.click(); // Programmatically click the hidden input
+                }
+            };
+            // -----------------------------------------------------------
+
+
             const identifyPlant = async () => {
                 if (!base64Image || !mimeType) {
-                    // This case should be blocked by the disabled button, but as a safeguard:
                     setError("Please select a photo of a plant first."); 
                     return;
                 }
@@ -793,11 +815,12 @@
                     <h2 className="text-3xl font-bold text-gray-800 mb-4">Identify Plant</h2>
                     <p className="text-gray-600 mb-6 text-center">Take a clear photo or upload an image of the plant you want to identify.</p>
                     
-                    {/* HIDDEN FILE INPUTS (Must be outside the main logic/render block to ensure immediate DOM presence) */}
+                    {/* HIDDEN FILE INPUTS (Now using refs) */}
+                    
                     {/* 1. Camera Input */}
                     <input
                         type="file"
-                        id="camera-input" 
+                        ref={cameraInputRef} /* Using ref for direct manipulation */
                         accept="image/*"
                         capture="environment" /* Forces camera to open immediately */
                         onChange={handleImageSelect}
@@ -806,7 +829,7 @@
                      {/* 2. File/Gallery Input */}
                     <input
                         type="file"
-                        id="file-input" 
+                        ref={fileInputRef} /* Using ref for direct manipulation */
                         accept="image/*"
                         onChange={handleImageSelect}
                         className="hidden"
@@ -836,23 +859,23 @@
                     <div className="w-full mt-6 space-y-4">
                         {!imagePreviewUrl ? (
                             <div className="flex gap-4">
-                                {/* Take New Photo Button - Links to #camera-input via label */}
-                                <label 
-                                    htmlFor="camera-input"
+                                {/* Take New Photo Button - Now using a direct onClick handler to fire the ref's click() method */}
+                                <button
+                                    onClick={handleCameraClick}
                                     className="flex-1 cursor-pointer w-full py-3 rounded-xl font-bold text-lg transition duration-150 flex items-center justify-center shadow-lg bg-green-600 text-white hover:bg-green-700 shadow-green-400/50"
                                 >
                                     <IconCamera className="w-5 h-5 mr-2" />
                                     Take New Photo
-                                </label>
+                                </button>
                                 
-                                {/* Upload from Library Button - Links to #file-input via label */}
-                                <label 
-                                    htmlFor="file-input"
+                                {/* Upload from Library Button - Now using a direct onClick handler to fire the ref's click() method */}
+                                <button
+                                    onClick={handleFileClick}
                                     className="flex-1 cursor-pointer w-full py-3 rounded-xl font-bold text-lg transition duration-150 flex items-center justify-center shadow-md bg-gray-200 text-gray-700 hover:bg-gray-300"
                                 >
                                     <IconUpload className="w-5 h-5 mr-2" />
                                     Upload from Library
-                                </label>
+                                </button>
                             </div>
                         ) : (
                             // Identify Plant Button: Visible once an image is selected
