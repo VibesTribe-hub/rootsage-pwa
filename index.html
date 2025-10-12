@@ -216,7 +216,7 @@
 
         const IconSettings = (props) => (
             <BaseIcon {...props}>
-                <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.44a2 2 0 0 1-2 2h-.44a2 2 0 0 0-2 2v.44a2 2 0 0 1-2 2h-.44a2 2 0 0 0-2 2v.44a2 2 0 0 1 2 2h.44a2 2 0 0 0 2 2v.44a2 2 0 0 1 2 2h.44a2 2 0 0 0 2 2v.44a2 2 0 0 1 2 2h.44a2 2 0 0 0 2 2v-.44a2 2 0 0 1 2-2h.44a2 2 0 0 0 2-2v-.44a2 2 0 0 1 2-2h.44a2 2 0 0 0 2-2v-.44a2 2 0 0 1 2-2h-.44a2 2 0 0 0-2-2v-.44a2 2 0 0 1-2-2h-.44a2 2 0 0 0-2-2v-.44a2 2 0 0 1-2-2h-.44a2 2 0 0 0-2-2z" />
+                <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.44a2 2 0 0 1-2 2h-.44a2 2 0 0 0-2 2v.44a2 2 0 0 1-2 2h-.44a2 2 0 0 0-2 2v.44a2 2 0 0 1 2 2h.44a2 2 0 0 0 2 2v.44a2 2 0 0 1 2 2h.44a2 2 0 0 0 2 2v.44a2 2 0 0 1 2 2h.44a2 2 0 0 0 2 2v-.44a2 2 0 0 1 2-2h.44a2 2 0 0 0 2-2v-.44a2 2 0 0 1 2-2h.44a2 2 0 0 0 2-2v-.44a2 2 0 0 1 2-2h.44a2 2 0 0 0-2-2v-.44a2 2 0 0 1-2-2h-.44a2 2 0 0 0-2-2v-.44a2 2 0 0 1-2-2h-.44a2 2 0 0 0-2-2z" />
                 <circle cx="12" cy="12" r="3" />
             </BaseIcon>
         );
@@ -671,7 +671,6 @@
         const CameraPage = () => {
             const { setCurrentPage, setSelectedPlant } = useAppState();
             const { addPlant } = usePlantActions();
-            const fileInputRef = useRef(null);
 
             const [imagePreviewUrl, setImagePreviewUrl] = useState(null);
             const [base64Image, setBase64Image] = useState(null);
@@ -683,6 +682,12 @@
                 const file = event.target.files[0];
                 if (file) {
                     setError(null);
+                    // Check file size (e.g., limit to 5MB for API call)
+                    if (file.size > 5 * 1024 * 1024) {
+                        setError("File is too large (max 5MB).");
+                        return;
+                    }
+
                     setMimeType(file.type);
                     const reader = new FileReader();
                     
@@ -757,11 +762,15 @@
                         // 2. Navigate to the detail page (addPlant already set selectedPlant)
                         if (savedPlant) {
                             setCurrentPage(PAGES.DETAIL);
+                            // Clear image state after successful identification
+                            setImagePreviewUrl(null);
+                            setBase64Image(null);
+                            setMimeType(null);
                         } else {
                              setError("Identification successful, but failed to save to library.");
                         }
                     } else {
-                        setError("Identification failed. Could not parse response from AI.");
+                        setError("Identification failed. Could not parse response from AI. Please try a clearer image.");
                         console.error("AI Response Error:", result);
                     }
                 } catch (e) {
@@ -772,12 +781,6 @@
                 }
             };
             
-            // Allow the user to click the preview image to re-open the file selector
-            const openFileSelector = () => {
-                fileInputRef.current?.click();
-            };
-
-
             return (
                 <div className="p-4 flex flex-col items-center max-w-lg mx-auto h-full relative">
                     {isLoading && (
@@ -789,18 +792,19 @@
                     <h2 className="text-3xl font-bold text-gray-800 mb-4">Identify Plant</h2>
                     <p className="text-gray-600 mb-6 text-center">Take or upload a clear photo of the leaf or flower.</p>
                     
+                    {/* HIDDEN FILE INPUT ELEMENT */}
                     <input
                         type="file"
+                        id="file-upload-input" // Required ID for the label to target
                         accept="image/*"
                         capture="environment" /* Suggests using the device camera first */
                         onChange={handleImageSelect}
-                        ref={fileInputRef}
                         className="hidden"
                     />
 
-                    {/* Image Preview / Upload Area */}
-                    <div 
-                        onClick={openFileSelector}
+                    {/* Image Preview / Upload Area - Now a LABEL */}
+                    <label 
+                        htmlFor="file-upload-input"
                         className={`w-full h-80 flex items-center justify-center rounded-2xl shadow-xl transition duration-300 cursor-pointer 
                             ${imagePreviewUrl ? 'p-0 border-4 border-green-300' : 'bg-green-50 border-2 border-dashed border-green-300 hover:bg-green-100 p-8'}`}
                     >
@@ -813,7 +817,7 @@
                                 <p className="text-sm text-green-500 mt-1">or take a picture</p>
                             </div>
                         )}
-                    </div>
+                    </label>
 
                     {error && (
                         <div className="mt-4 p-3 bg-red-100 border border-red-400 text-red-700 rounded-lg w-full text-sm">
