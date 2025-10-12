@@ -216,7 +216,7 @@
 
         const IconSettings = (props) => (
             <BaseIcon {...props}>
-                <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.44a2 2 0 0 1-2 2h-.44a2 2 0 0 0-2 2v.44a2 2 0 0 1-2 2h-.44a2 2 0 0 0-2 2v.44a2 2 0 0 1 2 2h.44a2 2 0 0 0 2 2v.44a2 2 0 0 1 2 2h.44a2 2 0 0 0 2 2v.44a2 2 0 0 1 2 2h.44a2 2 0 0 0 2 2v-.44a2 2 0 0 1 2-2h.44a2 2 0 0 0 2-2v-.44a2 2 0 0 1 2-2h.44a2 2 0 0 0 2-2v-.44a2 2 0 0 1 2-2h.44a2 2 0 0 0-2-2v-.44a2 2 0 0 1-2-2h-.44a2 2 0 0 0-2-2v-.44a2 2 0 0 1-2-2h-.44a2 2 0 0 0-2-2z" />
+                <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.44a2 2 0 0 1-2 2h-.44a2 2 0 0 0-2 2v.44a2 2 0 0 1-2 2h-.44a2 2 0 0 0-2 2v.44a2 2 0 0 1 2 2h.44a2 2 0 0 0 2 2v.44a2 2 0 0 1 2 2h.44a2 2 0 0 0 2 2v.44a2 2 0 0 1 2 2h.44a2 2 0 0 0 2-2v-.44a2 2 0 0 1 2-2h.44a2 2 0 0 0 2-2v-.44a2 2 0 0 1 2-2h.44a2 2 0 0 0-2-2v-.44a2 2 0 0 1-2-2h-.44a2 2 0 0 0-2-2v-.44a2 2 0 0 1-2-2h-.44a2 2 0 0 0-2-2z" />
                 <circle cx="12" cy="12" r="3" />
             </BaseIcon>
         );
@@ -605,7 +605,7 @@
                             className="w-full bg-green-600 text-white py-3 rounded-xl font-bold text-lg hover:bg-green-700 transition duration-150 flex items-center justify-center shadow-md shadow-green-300"
                         >
                             <IconCamera className="w-5 h-5 mr-2" />
-                            Open Camera
+                            Open Identifier
                         </button>
                     </div>
 
@@ -703,7 +703,8 @@
             
             const identifyPlant = async () => {
                 if (!base64Image || !mimeType) {
-                    setError("Please select a photo of a plant first.");
+                    // This case should be blocked by the disabled button, but as a safeguard:
+                    setError("Please select a photo of a plant first."); 
                     return;
                 }
 
@@ -790,56 +791,97 @@
                     )}
 
                     <h2 className="text-3xl font-bold text-gray-800 mb-4">Identify Plant</h2>
-                    <p className="text-gray-600 mb-6 text-center">Take or upload a clear photo of the leaf or flower.</p>
+                    <p className="text-gray-600 mb-6 text-center">Take a clear photo or upload an image of the plant you want to identify.</p>
                     
-                    {/* HIDDEN FILE INPUT ELEMENT */}
+                    {/* HIDDEN FILE INPUTS (Must be outside the main logic/render block to ensure immediate DOM presence) */}
+                    {/* 1. Camera Input */}
                     <input
                         type="file"
-                        id="file-upload-input" // Required ID for the label to target
+                        id="camera-input" 
                         accept="image/*"
-                        capture="environment" /* Suggests using the device camera first */
+                        capture="environment" /* Forces camera to open immediately */
+                        onChange={handleImageSelect}
+                        className="hidden"
+                    />
+                     {/* 2. File/Gallery Input */}
+                    <input
+                        type="file"
+                        id="file-input" 
+                        accept="image/*"
                         onChange={handleImageSelect}
                         className="hidden"
                     />
 
-                    {/* Image Preview / Upload Area - Now a LABEL */}
-                    <label 
-                        htmlFor="file-upload-input"
-                        className={`w-full h-80 flex items-center justify-center rounded-2xl shadow-xl transition duration-300 cursor-pointer 
-                            ${imagePreviewUrl ? 'p-0 border-4 border-green-300' : 'bg-green-50 border-2 border-dashed border-green-300 hover:bg-green-100 p-8'}`}
-                    >
+                    {/* Image Preview Area */}
+                    <div className={`w-full h-80 flex items-center justify-center rounded-2xl shadow-xl border-4 transition duration-300 overflow-hidden 
+                            ${imagePreviewUrl ? 'p-0 border-green-300' : 'bg-gray-100 border-gray-200 p-8'}`}>
                         {imagePreviewUrl ? (
-                            <img src={imagePreviewUrl} alt="Plant Preview" className="w-full h-full object-cover rounded-xl" />
+                            <img src={imagePreviewUrl} alt="Plant Preview" className="w-full h-full object-cover" />
                         ) : (
-                            <div className="text-center text-green-600">
-                                <IconUpload className="w-10 h-10 mx-auto mb-2"/>
-                                <p className="font-semibold">Tap to Upload Photo</p>
-                                <p className="text-sm text-green-500 mt-1">or take a picture</p>
+                            <div className="text-center text-gray-500">
+                                <IconCamera className="w-10 h-10 mx-auto mb-2"/>
+                                <p className="font-semibold">No Photo Selected</p>
+                                <p className="text-sm mt-1">Use the buttons below to begin.</p>
                             </div>
                         )}
-                    </label>
-
+                    </div>
+                    
                     {error && (
                         <div className="mt-4 p-3 bg-red-100 border border-red-400 text-red-700 rounded-lg w-full text-sm">
                             Error: {error}
                         </div>
                     )}
+                    
+                    {/* Action Buttons: Visible if no image is selected or if an image is selected but we are not loading */}
+                    <div className="w-full mt-6 space-y-4">
+                        {!imagePreviewUrl ? (
+                            <div className="flex gap-4">
+                                {/* Take New Photo Button - Links to #camera-input via label */}
+                                <label 
+                                    htmlFor="camera-input"
+                                    className="flex-1 cursor-pointer w-full py-3 rounded-xl font-bold text-lg transition duration-150 flex items-center justify-center shadow-lg bg-green-600 text-white hover:bg-green-700 shadow-green-400/50"
+                                >
+                                    <IconCamera className="w-5 h-5 mr-2" />
+                                    Take New Photo
+                                </label>
+                                
+                                {/* Upload from Library Button - Links to #file-input via label */}
+                                <label 
+                                    htmlFor="file-input"
+                                    className="flex-1 cursor-pointer w-full py-3 rounded-xl font-bold text-lg transition duration-150 flex items-center justify-center shadow-md bg-gray-200 text-gray-700 hover:bg-gray-300"
+                                >
+                                    <IconUpload className="w-5 h-5 mr-2" />
+                                    Upload from Library
+                                </label>
+                            </div>
+                        ) : (
+                            // Identify Plant Button: Visible once an image is selected
+                            <button
+                                onClick={identifyPlant}
+                                disabled={isLoading}
+                                className={`w-full py-3 rounded-xl font-bold text-lg transition duration-150 flex items-center justify-center shadow-lg ${
+                                    !isLoading
+                                        ? 'bg-green-600 text-white hover:bg-green-700 shadow-green-400/50'
+                                        : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                                }`}
+                            >
+                                <IconZap className="w-5 h-5 mr-2" />
+                                {isLoading ? 'Analyzing...' : 'Identify Plant'}
+                            </button>
+                        )}
 
-                    {/* Identify Button */}
-                    <div className="w-full mt-6">
-                        <button
-                            onClick={identifyPlant}
-                            disabled={!base64Image || isLoading}
-                            className={`w-full py-3 rounded-xl font-bold text-lg transition duration-150 flex items-center justify-center shadow-lg ${
-                                base64Image && !isLoading
-                                    ? 'bg-green-600 text-white hover:bg-green-700 shadow-green-400/50'
-                                    : 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                            }`}
-                        >
-                            <IconZap className="w-5 h-5 mr-2" />
-                            {isLoading ? 'Identifying...' : 'Identify Plant'}
-                        </button>
+                        {/* Retake/Cancel Button - Always show a way to reset if a photo is selected */}
+                         {imagePreviewUrl && (
+                            <button 
+                                onClick={() => { setImagePreviewUrl(null); setBase64Image(null); setMimeType(null); setError(null); }}
+                                disabled={isLoading}
+                                className="w-full py-2 text-sm text-red-500 hover:text-red-700 disabled:opacity-50"
+                            >
+                                <IconX className="w-4 h-4 inline-block mr-1"/> Clear Photo and Retake
+                            </button>
+                        )}
                     </div>
+
                 </div>
             );
         };
