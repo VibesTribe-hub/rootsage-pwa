@@ -4,887 +4,824 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>RootSage Plant Identifier (PWA)</title>
+    <!-- PWA Requirements: Define how the app should look on a home screen -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black">
     <meta name="theme-color" content="#10b981">
     
-    <link rel="manifest" href="manifest.json">
-    <link rel="apple-touch-icon" href="icons/icon-192x192.png">
-
+    <!-- Load Tailwind CSS, React, ReactDOM, and Babel -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <!-- Babel is needed to compile JSX in the browser for this single-file setup -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     
-    <script src="https://unpkg.com/lucide-react@latest/dist/umd/lucide-react.js"></script>
+    <!-- REMOVED: Lucide Icons UMD Bundle to fix forwardRef error. Icons are now defined as inline SVGs below. -->
 
+    <!-- Firebase SDK Imports -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { 
             getAuth, 
             signInAnonymously, 
             signInWithCustomToken, 
-            onAuthStateChanged, 
-            GoogleAuthProvider, 
-            signInWithPopup,
-            signOut
+            onAuthStateChanged 
         } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { 
             getFirestore, 
             doc, 
             collection, 
+            query, 
+            where, 
+            addDoc, 
+            getDocs, 
             setDoc, 
-            getDoc, 
-            onSnapshot,
-            serverTimestamp,
-            getDocs,
-            query,
-            where
+            updateDoc, 
+            deleteDoc, 
+            onSnapshot, 
+            serverTimestamp 
         } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
 
-
-        // --- SECURITY FIX: Use Placeholder for GitHub Actions Injection ---
-        // The GitHub Action (deploy.yml) will replace $$FIREBASE_API_KEY$$ with the secret value during build.
-        const SECURE_FIREBASE_CONFIG = {
-            apiKey: "$$FIREBASE_API_KEY$$",
-            authDomain: "rootsage-93b81.firebaseapp.com",
-            projectId: "rootsage-93b81",
-            storageBucket: "rootsage-93b81.firebasestorage.app",
-            messagingSenderId: "1030097757643",
-            appId: "1:1030097757643:web:60af064ed2e83c78fd824e"
-        };
-        // ------------------------------------------------------------------
-
-        // Global variables provided by the environment
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-        
-        // Initialize Firebase
-        const firebaseApp = initializeApp(SECURE_FIREBASE_CONFIG);
-        const db = getFirestore(firebaseApp);
-        const auth = getAuth(firebaseApp);
-        
-        // Expose Firebase functions to the global window object for use in the Babel script
-        window.auth = auth;
-        window.db = db;
-        window.onAuthStateChanged = onAuthStateChanged;
-        window.signInWithPopup = signInWithPopup;
-        window.GoogleAuthProvider = GoogleAuthProvider;
-        window.signOut = signOut;
-        window.collection = collection;
-        window.doc = doc;
-        window.setDoc = setDoc;
-        window.getDoc = getDoc;
-        window.onSnapshot = onSnapshot;
-        window.serverTimestamp = serverTimestamp;
-        window.getDocs = getDocs;
-        window.query = query;
-        window.where = where;
-        
-        // NEW: Flag to signal React that Firebase setup is complete (useful for immediate check)
-        window.FIREBASE_LOADED = true;
-        
-        // NEW: Use a custom event to notify React that it's safe to start (most reliable)
-        document.dispatchEvent(new CustomEvent('firebase-ready'));
-
+        // Set Firebase Log Level to Debug
         setLogLevel('Debug');
+
+        // Global Firebase variables will be set here
+        window.firebase = {};
+
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        if (firebaseConfig) {
+            try {
+                const app = initializeApp(firebaseConfig);
+                const db = getFirestore(app);
+                const auth = getAuth(app);
+
+                window.firebase.app = app;
+                window.firebase.db = db;
+                window.firebase.auth = auth;
+                window.firebase.appId = appId;
+                window.firebase.serverTimestamp = serverTimestamp;
+                
+                // Auth initialization
+                onAuthStateChanged(auth, async (user) => {
+                    if (!user) {
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(auth, initialAuthToken);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    }
+                    // Inform the React app that Firebase is ready
+                    window.dispatchEvent(new Event('firebase-ready'));
+                });
+
+                // Export Firestore methods for easy access in React
+                window.firebase.firestore = {
+                    doc, collection, query, where, addDoc, getDocs, setDoc, updateDoc, deleteDoc, onSnapshot
+                };
+
+            } catch (error) {
+                console.error("Firebase initialization failed:", error);
+            }
+        } else {
+             console.warn("Firebase configuration not found. Running without persistence.");
+             window.dispatchEvent(new Event('firebase-ready'));
+        }
+
     </script>
 
-
     <style>
-        body {
-            font-family: 'Inter', sans-serif;
-            background-color: #f3f4f6;
-            margin: 0;
-            padding: 0;
-            display: flex;
-            justify-content: center;
-            min-height: 100vh;
+        /* Custom scrollbar styling for a cleaner look */
+        ::-webkit-scrollbar {
+            width: 8px;
         }
-        #root {
-            width: 100%;
-            max-width: 600px; /* Max width for a clean mobile container */
-            height: 100vh;
-            background-color: white;
-            box-shadow: 0 0 20px rgba(0, 0, 0, 0.1);
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
         }
-        /* Style the modal overlay */
-        .modal-overlay {
-            background-color: rgba(0, 0, 0, 0.6);
-            backdrop-filter: blur(2px);
+        ::-webkit-scrollbar-thumb {
+            background: #a7f3d0;
+            border-radius: 10px;
         }
-        /* Hide scrollbar for cleaner look */
-        .overflow-y-auto::-webkit-scrollbar {
-            display: none;
-        }
-        .overflow-y-auto {
-            -ms-overflow-style: none;  /* IE and Edge */
-            scrollbar-width: none;  /* Firefox */
+        ::-webkit-scrollbar-thumb:hover {
+            background: #6ee7b7;
         }
     </style>
 </head>
-<body>
+<body class="bg-gray-50 font-sans antialiased">
     <div id="root"></div>
 
     <script type="text/babel">
-        // Ensure Lucide icons are available from the global context
-        const { 
-            Leaf: IconLeaf, 
-            Camera: IconCamera, 
-            BookOpen: IconBookOpen, 
-            GalleryVertical: IconGalleryVertical, 
-            User: IconUser, 
-            AlertTriangle: IconAlertTriangle,
-            UploadCloud: IconUploadCloud,
-            X: IconX,
-            CheckCircle: IconCheckCircle,
-            Home: IconHome,
-            Trash2: IconTrash2,
-            Share2: IconShare2,
-            RefreshCw: IconRefreshCw,
-            Crown: IconCrown
-        } = lucide.icons; // Corrected: Access icons from lucide.icons
+        const { useState, useEffect, createContext, useContext, useMemo, useCallback } = React;
+        
+        // --- Icon Fix: Using Inline SVGs to avoid UMD/forwardRef issues ---
+        
+        // Base Icon Component for simplicity
+        const BaseIcon = ({ children, className = "w-6 h-6", color = "currentColor" }) => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+                {children}
+            </svg>
+        );
 
-        const { useState, useEffect, useCallback } = React;
+        const IconLeaf = (props) => (
+            <BaseIcon {...props}>
+                <path d="M11 20A7 7 0 0 1 9.87 9.87c.75-.98 1.81-2.14 2.91-3.23a4 4 0 0 0 5.43 5.43c-1.09 1.09-2.25 2.16-3.23 2.91A7 7 0 0 1 4 13.91" />
+                <path d="M16 16a7 7 0 1 0-7-7c0 1.09.25 2.16.75 3.14-.98.75-2.14 1.81-3.23 2.91a4 4 0 0 0 5.43 5.43c1.09-1.09 2.16-2.25 2.91-3.23.98.5 2.05.75 3.14.75Z" />
+            </BaseIcon>
+        );
 
-        // --- ENUMS AND CONSTANTS ---
+        const IconUser = (props) => (
+            <BaseIcon {...props}>
+                <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
+                <circle cx="12" cy="7" r="4" />
+            </BaseIcon>
+        );
 
+        const IconCamera = (props) => (
+            <BaseIcon {...props}>
+                <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z" />
+                <circle cx="12" cy="13" r="3" />
+            </BaseIcon>
+        );
+
+        const IconHome = (props) => (
+            <BaseIcon {...props}>
+                <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                <polyline points="9 22 9 12 15 12 15 22" />
+            </BaseIcon>
+        );
+
+        const IconBookOpen = (props) => (
+            <BaseIcon {...props}>
+                <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
+                <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
+            </BaseIcon>
+        );
+
+        const IconShieldCheck = (props) => (
+            <BaseIcon {...props}>
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                <path d="m9 12 2 2 4-4" />
+            </BaseIcon>
+        );
+
+        const IconDroplet = (props) => (
+            <BaseIcon {...props}>
+                <path d="M12 2a8 8 0 0 0-7 14.4c.15.65.65 1.15 1.3 1.3 2.5 1.1 5 1.1 7 0 2.5-.7 4.2-2.3 5.7-4.2A8 8 0 0 0 12 2Z" />
+            </BaseIcon>
+        );
+
+        const IconSun = (props) => (
+            <BaseIcon {...props}>
+                <circle cx="12" cy="12" r="4" />
+                <path d="M12 2v2" />
+                <path d="M12 20v2" />
+                <path d="m4.93 4.93 1.41 1.41" />
+                <path d="m17.66 17.66 1.41 1.41" />
+                <path d="M2 12h2" />
+                <path d="M20 12h2" />
+                <path d="m4.93 19.07 1.41-1.41" />
+                <path d="m17.66 6.34 1.41-1.41" />
+            </BaseIcon>
+        );
+
+        const IconX = (props) => (
+            <BaseIcon {...props}>
+                <path d="M18 6 6 18" />
+                <path d="m6 6 12 12" />
+            </BaseIcon>
+        );
+
+        const IconCheck = (props) => (
+            <BaseIcon {...props}>
+                <path d="M20 6 9 17l-5-5" />
+            </BaseIcon>
+        );
+
+        const IconSettings = (props) => (
+            <BaseIcon {...props}>
+                <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.44a2 2 0 0 1-2 2h-.44a2 2 0 0 0-2 2v.44a2 2 0 0 1-2 2h-.44a2 2 0 0 0-2 2v.44a2 2 0 0 1 2 2h.44a2 2 0 0 0 2 2v.44a2 2 0 0 1 2 2h.44a2 2 0 0 0 2 2v.44a2 2 0 0 1 2 2h.44a2 2 0 0 0 2 2v-.44a2 2 0 0 1 2-2h.44a2 2 0 0 0 2-2v-.44a2 2 0 0 1 2-2h.44a2 2 0 0 0 2-2v-.44a2 2 0 0 1 2-2h-.44a2 2 0 0 0-2-2v-.44a2 2 0 0 1-2-2h-.44a2 2 0 0 0-2-2v-.44a2 2 0 0 1-2-2h-.44a2 2 0 0 0-2-2z" />
+                <circle cx="12" cy="12" r="3" />
+            </BaseIcon>
+        );
+
+        const IconSearch = (props) => (
+            <BaseIcon {...props}>
+                <circle cx="11" cy="11" r="8" />
+                <path d="m21 21-4.3-4.3" />
+            </BaseIcon>
+        );
+
+        const IconHeart = (props) => (
+            <BaseIcon {...props}>
+                <path d="M19 14c1.49-1.46 3-3.23 3-5.5a5.5 5.5 0 0 0-5.5-5.5c-1.8 0-3.4 1-4.3 2.6L12 6l-1.2-2.9C9.4 2.5 7.8 2 6 2a5.5 5.5 0 0 0-5.5 5.5c0 2.27 1.5 4.04 3 5.5L12 22z" />
+            </BaseIcon>
+        );
+
+        const IconTrash2 = (props) => (
+            <BaseIcon {...props}>
+                <path d="M3 6h18" />
+                <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+                <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+                <line x1="10" x2="10" y1="11" y2="17" />
+                <line x1="14" x2="14" y1="11" y2="17" />
+            </BaseIcon>
+        );
+
+        const IconZap = (props) => (
+            <BaseIcon {...props}>
+                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+            </BaseIcon>
+        );
+        // --- End Icon Fix ---
+
+        // --- Global State and Constants ---
         const PAGES = {
             SPLASH: 'splash',
-            STEWARDSHIP: 'stewardship',
+            DISCLAIMER: 'disclaimer',
+            HOME: 'home',
             CAMERA: 'camera',
-            IDENTIFICATION: 'identification',
-            COLLECTIONS: 'collections',
+            LIBRARY: 'library',
             PROFILE: 'profile',
-            COMMUNITY: 'community'
+            STEWARDSHIP: 'stewardship',
+            DETAIL: 'detail' // For plant detail view
         };
+        
+        // AppContext now manages both UI state (currentPage) and Firebase/Auth state
+        const AppContext = createContext();
 
-        const RANKS = {
-            SEEDLING: { score: 0, name: "Seedling", color: "text-gray-500", icon: "🌱" }, // Used emojis for icons
-            APPRENTICE: { score: 10, name: "Apprentice Sprout", color: "text-green-500", icon: "🌿" },
-            JOURNEYMAN: { score: 50, name: "Journeyman Arborist", color: "text-blue-500", icon: "🌳" },
-            MASTER: { score: 150, name: "Master Root Sage", color: "text-yellow-500", icon: "👑" }
-        };
+        const useAppState = () => useContext(AppContext);
 
-        const INITIAL_USER_DATA = {
-            displayName: "Anonymous User",
-            score: 0,
-            collections: 0,
-            lastActivity: null,
-        };
+        // --- Consolidated App Provider ---
 
-        const USER_DATA_PATH = `/artifacts/${appId}/users`;
-        const PUBLIC_COLLECTION_PATH = `/artifacts/${appId}/public/data/collections`;
-
-
-        // --- FIREBASE HOOKS (FIXED) ---
-
-        const useAuth = () => {
-            const [user, setUser] = useState(null);
+        // Renaming FirebaseProvider to AppProvider and integrating UI state
+        const AppProvider = ({ children }) => {
+            const [currentPage, setCurrentPage] = useState(PAGES.SPLASH); // UI State
+            const [db, setDb] = useState(null); // Firebase State
+            const [auth, setAuth] = useState(null);
+            const [userId, setUserId] = useState(null);
             const [isAuthReady, setIsAuthReady] = useState(false);
-            
-            // State to safely store the globally available Firebase instances
-            const [firebaseInstances, setFirebaseInstances] = useState({
-                auth: null,
-                db: null,
-                GoogleAuthProvider: null
-            });
 
+            // 1. Initialize Firebase services
             useEffect(() => {
-                // Check if the global instances are available
-                if (window.auth && window.db && window.GoogleAuthProvider) {
-                    setFirebaseInstances({
-                        auth: window.auth,
-                        db: window.db,
-                        GoogleAuthProvider: window.GoogleAuthProvider
-                    });
-                    
-                    // Listen for authentication state changes (This ensures user state is always current)
-                    const unsubscribe = window.onAuthStateChanged(window.auth, (currentUser) => {
-                        setUser(currentUser);
-                        setIsAuthReady(true);
-                    });
-
-                    return () => unsubscribe();
-                } else {
-                    // Fallback for immediate readiness if instances aren't found (though they should be)
-                    setIsAuthReady(true); 
-                }
-            }, []); // Empty dependency array ensures this runs once
-
-            const signInWithGoogle = useCallback(async () => {
-                const { auth, GoogleAuthProvider } = firebaseInstances;
-                if (!auth || !GoogleAuthProvider) return; 
-                try {
-                    await window.signInWithPopup(auth, new GoogleAuthProvider());
-                } catch (error) {
-                    console.error("Google Sign-In failed:", error);
-                }
-            }, [firebaseInstances]);
-
-            const signOutUser = useCallback(async () => {
-                const { auth } = firebaseInstances;
-                if (!auth) return; 
-                try {
-                    await window.signOut(auth);
-                    setUser(null);
-                } catch (error) {
-                    console.error("Sign-out failed:", error);
-                }
-            }, [firebaseInstances]);
-
-            // Return the state-managed dbInstance for other hooks to use
-            return { 
-                user, 
-                isAuthReady, 
-                dbInstance: firebaseInstances.db, 
-                signInWithGoogle, 
-                signOutUser, 
-                userId: user?.uid 
-            };
-        };
-
-        const useUserData = (userId, dbInstance, isAuthReady) => {
-            const [data, setData] = useState(null);
-            
-            useEffect(() => {
-                // Dependency FIX: Use dbInstance passed from useAuth
-                if (!isAuthReady || !dbInstance || !userId) {
-                    setData(INITIAL_USER_DATA);
-                    return;
-                }
-
-                const userDocRef = window.doc(dbInstance, USER_DATA_PATH, userId);
-                
-                // Real-time listener for user data
-                const unsubscribe = window.onSnapshot(userDocRef, async (docSnapshot) => {
-                    if (docSnapshot.exists()) {
-                        // User data exists, update state
-                        setData(docSnapshot.data());
+                const initializeFirebase = () => {
+                    if (window.firebase && window.firebase.db && window.firebase.auth) {
+                        setDb(window.firebase.db);
+                        setAuth(window.firebase.auth);
+                        
+                        // Setup Auth State Listener
+                        const unsubscribe = window.firebase.auth.onAuthStateChanged((user) => {
+                            if (user) {
+                                setUserId(user.uid);
+                            } else {
+                                // Fallback for anonymous login if auth state hasn't resolved to a user
+                                setUserId(crypto.randomUUID()); 
+                            }
+                            setIsAuthReady(true);
+                        });
+                        return () => unsubscribe();
                     } else {
-                        // User data doesn't exist, create it
-                        const newUserData = {
-                            ...INITIAL_USER_DATA,
-                            displayName: window.auth.currentUser?.displayName || "Anonymous User",
-                            createdAt: window.serverTimestamp(),
-                            userId: userId,
-                        };
-                        try {
-                            await window.setDoc(userDocRef, newUserData);
-                            setData(newUserData);
-                        } catch (e) {
-                            console.error("Error creating user document:", e);
-                            setData(INITIAL_USER_DATA);
-                        }
+                        // For non-persisted environment, set a random ID immediately
+                        setUserId(crypto.randomUUID());
+                        setIsAuthReady(true);
                     }
-                }, (error) => {
-                    console.error("Error listening to user data:", error);
-                    setData(INITIAL_USER_DATA);
-                });
+                };
 
-                return () => unsubscribe();
-            }, [userId, dbInstance, isAuthReady]);
+                // Listen for the custom event fired after Firebase init/auth
+                window.addEventListener('firebase-ready', initializeFirebase);
+                // Also call once in case the event was fired before the listener was attached
+                initializeFirebase();
 
-            // Function to update the user's score
-            const updateScore = useCallback(async (points) => {
-                if (!dbInstance || !userId) return;
-                const userDocRef = window.doc(dbInstance, USER_DATA_PATH, userId);
-                try {
-                    await window.setDoc(userDocRef, { 
-                        score: (data?.score || 0) + points,
-                        lastActivity: window.serverTimestamp()
-                    }, { merge: true });
-                } catch (e) {
-                    console.error("Error updating score:", e);
-                }
-            }, [dbInstance, userId, data]);
+                return () => {
+                    window.removeEventListener('firebase-ready', initializeFirebase);
+                };
+            }, []);
 
-            return { userData: data, updateScore };
+            const value = useMemo(() => ({
+                // UI State
+                currentPage,
+                setCurrentPage,
+                // Firebase/Data State
+                db,
+                auth,
+                userId,
+                isAuthReady,
+                appId: window.firebase ? window.firebase.appId : 'default-app-id',
+                firestore: window.firebase ? window.firebase.firestore : null,
+                serverTimestamp: window.firebase ? window.firebase.serverTimestamp : null
+            }), [currentPage, setCurrentPage, db, auth, userId, isAuthReady]);
+
+            return (
+                <AppContext.Provider value={value}>
+                    {children}
+                </AppContext.Provider>
+            );
         };
 
-        const useCollections = (dbInstance, isAuthReady, userId) => {
-            const [collections, setCollections] = useState([]);
+        // --- Data Fetching Hooks ---
+
+        const useUserPlants = () => {
+            const { db, userId, isAuthReady, appId, firestore } = useAppState();
+            const [plants, setPlants] = useState([]);
             const [loading, setLoading] = useState(true);
+            const [error, setError] = useState(null);
 
             useEffect(() => {
-                // Dependency FIX: Use dbInstance passed from useAuth
-                if (!isAuthReady || !dbInstance || !userId) {
-                    setCollections([]);
+                if (!db || !isAuthReady || !firestore || !userId) {
                     setLoading(false);
                     return;
                 }
-                
-                // Path to the user's private collection
-                const userCollectionsRef = window.collection(dbInstance, USER_DATA_PATH, userId, 'my_plants');
 
-                const unsubscribe = window.onSnapshot(userCollectionsRef, (snapshot) => {
-                    const list = snapshot.docs.map(doc => ({
-                        id: doc.id,
-                        ...doc.data(),
-                        // Convert Timestamp to readable date if needed
-                        collectedAt: doc.data().collectedAt?.toDate ? doc.data().collectedAt.toDate().toLocaleString() : 'N/A'
-                    }));
-                    setCollections(list);
-                    setLoading(false);
-                }, (error) => {
-                    console.error("Error fetching collections:", error);
-                    setLoading(false);
-                });
+                // Path: /artifacts/{appId}/users/{userId}/plants
+                const userPlantsCollectionRef = firestore.collection(db, `artifacts/${appId}/users/${userId}/plants`);
+                const userPlantsQuery = firestore.query(userPlantsCollectionRef);
+
+                const unsubscribe = firestore.onSnapshot(userPlantsQuery, 
+                    (snapshot) => {
+                        const plantList = snapshot.docs.map(doc => ({
+                            id: doc.id,
+                            ...doc.data(),
+                            // Ensure createdAt is handled for display
+                            createdAt: doc.data().createdAt?.toDate ? doc.data().createdAt.toDate() : new Date(),
+                        }));
+                        setPlants(plantList);
+                        setLoading(false);
+                    }, 
+                    (err) => {
+                        console.error("Error fetching user plants:", err);
+                        setError(err);
+                        setLoading(false);
+                    }
+                );
 
                 return () => unsubscribe();
-            }, [dbInstance, isAuthReady, userId]);
+            }, [db, userId, isAuthReady, appId, firestore]);
 
-            // Function to add a plant to the collection
-            const addPlantToCollection = useCallback(async (plantData) => {
-                if (!dbInstance || !userId) {
-                    return { success: false, message: "Authentication required to save." };
-                }
+            return { plants, loading, error };
+        };
 
-                const userCollectionsRef = window.collection(dbInstance, USER_DATA_PATH, userId, 'my_plants');
-                
+        // --- Utility Functions ---
+
+        const getPath = (db, appId, userId, collectionName, docId) => {
+            const firestore = window.firebase.firestore;
+            if (!firestore) return null;
+            const path = `artifacts/${appId}/users/${userId}/${collectionName}`;
+            return docId ? firestore.doc(db, path, docId) : firestore.collection(db, path);
+        };
+
+        const usePlantActions = () => {
+            const { db, userId, appId, firestore, serverTimestamp } = useAppState();
+
+            const addPlant = useCallback(async (data) => {
+                if (!db || !userId || !firestore) return;
                 try {
-                    const newDocRef = window.doc(userCollectionsRef);
-                    await window.setDoc(newDocRef, {
-                        ...plantData,
-                        collectedAt: window.serverTimestamp(),
-                        userId: userId,
-                    });
-                    
-                    return { success: true, message: "Plant added to collection!" };
-                } catch (e) {
-                    console.error("Error adding plant to collection:", e);
-                    return { success: false, message: "Failed to add plant to collection." };
-                }
-            }, [dbInstance, userId]);
-
-            return { collections, loading, addPlantToCollection };
-        };
-
-
-        // --- COMPONENTS ---
-
-        const Modal = ({ title, children, onClose }) => (
-            <div className="modal-overlay fixed inset-0 z-50 flex items-center justify-center p-4">
-                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 transform transition-all duration-300 scale-100">
-                    <div className="flex justify-between items-center border-b pb-3 mb-4">
-                        <h3 className="text-xl font-bold text-gray-800">{title}</h3>
-                        <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
-                            <IconX className="w-6 h-6" />
-                        </button>
-                    </div>
-                    {children}
-                </div>
-            </div>
-        );
-
-        const StewardshipPage = ({ setCurrentPage }) => (
-            <div className="p-6 h-full flex flex-col justify-between">
-                <div>
-                    <h1 className="text-4xl font-extrabold text-green-700 mb-4 flex items-center">
-                        <IconLeaf className="w-8 h-8 mr-2" /> RootSage
-                    </h1>
-                    <h2 className="text-2xl font-semibold text-gray-800 mb-6">Our Stewardship Code of Conduct</h2>
-                    
-                    <p className="text-gray-600 mb-4">
-                        By using RootSage, you agree to uphold our community values for plant identification and protection:
-                    </p>
-
-                    <ul className="space-y-4 text-gray-700">
-                        <li className="flex items-start">
-                            <IconCheckCircle className="w-5 h-5 text-green-500 mt-1 mr-3 flex-shrink-0" />
-                            <div>
-                                <strong className="block text-green-700">Respect Wildlife & Habitat:</strong> Never trespass or harm natural environments to obtain a photo.
-                            </div>
-                        </li>
-                        <li className="flex items-start">
-                            <IconCheckCircle className="w-5 h-5 text-green-500 mt-1 mr-3 flex-shrink-0" />
-                            <div>
-                                <strong className="block text-green-700">Avoid Picking or Damaging:</strong> Take photos without touching, picking, or altering the plant in its environment.
-                            </div>
-                        </li>
-                        <li className="flex items-start">
-                            <IconCheckCircle className="w-5 h-5 text-green-500 mt-1 mr-3 flex-shrink-0" />
-                            <div>
-                                <strong className="block text-green-700">Accuracy & Integrity:</strong> Strive for clear photos to ensure accurate identification and reliable community verification.
-                            </div>
-                        </li>
-                    </ul>
-                </div>
-                
-                <button
-                    onClick={() => setCurrentPage(PAGES.CAMERA)}
-                    className="w-full py-3 bg-green-600 text-white font-bold rounded-xl shadow-lg hover:bg-green-700 transition transform hover:scale-[1.01] active:scale-[0.99] mt-8"
-                >
-                    Agree & Start Identifying
-                </button>
-            </div>
-        );
-        
-        const CameraPage = ({ setCurrentPage, setScanResult, updateScore }) => {
-            const [selectedImages, setSelectedImages] = useState([]);
-            const [isLoading, setIsLoading] = useState(false);
-            const MAX_IMAGES = 3;
-
-            const handleImageChange = (event) => {
-                const files = Array.from(event.target.files).slice(0, MAX_IMAGES - selectedImages.length);
-                const newImages = files.map(file => ({
-                    url: URL.createObjectURL(file),
-                    file: file,
-                    name: file.name
-                }));
-                setSelectedImages(prev => [...prev, ...newImages]);
-            };
-
-            const removeImage = (index) => {
-                setSelectedImages(prev => prev.filter((_, i) => i !== index));
-            };
-
-            const handleScan = () => {
-                if (selectedImages.length === 0) return;
-
-                setIsLoading(true);
-
-                // --- MOCK IDENTIFICATION LOGIC ---
-                setTimeout(() => {
-                    const mockResult = {
-                        name: "Echinacea Purpurea",
-                        commonName: "Purple Coneflower",
-                        confidence: 95,
-                        description: "A popular perennial known for its large, brightly colored flowers and medicinal properties. It is native to eastern North America.",
-                        toxicity: "Generally considered non-toxic, but high doses may cause temporary stomach upset.",
-                        imageUrl: selectedImages[0]?.url || "https://placehold.co/400x300/10B981/FFFFFF?text=Echinacea"
+                    const collectionRef = getPath(db, appId, userId, 'plants');
+                    if (!collectionRef) return;
+                    const newPlant = {
+                        ...data,
+                        createdAt: serverTimestamp(),
+                        updatedAt: serverTimestamp(),
                     };
-
-                    setScanResult(mockResult);
-                    setCurrentPage(PAGES.IDENTIFICATION);
-                    
-                    // Simulate points for successful identification
-                    updateScore(5);
-
-                    setIsLoading(false);
-                    // Do NOT clear images here. Keep them for the result page reference if needed.
-                    // setSelectedImages([]);
-                }, 1500); 
-            };
-
-            return (
-                <div className="p-6">
-                    <h2 className="text-2xl font-bold text-gray-800 mb-6">Identify a Plant</h2>
-                    
-                    <div className="space-y-4 mb-6">
-                        {selectedImages.map((image, index) => (
-                            <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-xl border border-gray-200">
-                                <div className="flex items-center space-x-3">
-                                    <img src={image.url} alt={`Preview ${index + 1}`} className="w-12 h-12 object-cover rounded-lg" />
-                                    <span className="text-sm text-gray-600 truncate">{image.name}</span>
-                                </div>
-                                <button 
-                                    onClick={() => removeImage(index)}
-                                    className="text-red-500 hover:text-red-700 p-1 rounded-full bg-white transition duration-150"
-                                >
-                                    <IconX className="w-4 h-4" />
-                                </button>
-                            </div>
-                        ))}
-                    </div>
-
-                    {selectedImages.length < MAX_IMAGES && (
-                        <label 
-                            htmlFor="image-upload"
-                            className="flex flex-col items-center justify-center p-6 border-2 border-dashed border-green-300 text-green-700 bg-green-50 rounded-xl cursor-pointer hover:bg-green-100 transition duration-300"
-                        >
-                            <IconUploadCloud className="w-8 h-8 mb-2" />
-                            <span className="font-semibold">Upload Image ({selectedImages.length}/{MAX_IMAGES})</span>
-                            <span className="text-xs text-green-500 mt-1">For best results, upload 1-3 photos (leaf, flower, whole plant).</span>
-                            <input
-                                id="image-upload"
-                                type="file"
-                                accept="image/*"
-                                multiple
-                                onChange={handleImageChange}
-                                className="hidden"
-                                disabled={selectedImages.length >= MAX_IMAGES}
-                                // Add capture attribute hint for camera
-                                capture="environment" 
-                            />
-                        </label>
-                    )}
-
-                    <button
-                        onClick={handleScan}
-                        disabled={selectedImages.length === 0 || isLoading}
-                        className={`w-full py-4 mt-8 font-bold rounded-xl shadow-lg transition duration-300 ${
-                            selectedImages.length > 0 && !isLoading 
-                                ? 'bg-green-600 text-white hover:bg-green-700 transform hover:scale-[1.01]' 
-                                : 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                        }`}
-                    >
-                        {isLoading ? (
-                            <div className="flex justify-center items-center">
-                                <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                </svg>
-                                Analyzing...
-                            </div>
-                        ) : 'Identify Plant'}
-                    </button>
-                    
-                    <button
-                        onClick={() => setCurrentPage(PAGES.COMMUNITY)}
-                        className="w-full py-2 mt-4 text-green-600 font-semibold rounded-xl hover:bg-green-50 transition duration-300"
-                    >
-                        Community Verification (Coming Soon)
-                    </button>
-                </div>
-            );
-        };
-
-        const IdentificationPage = ({ scanResult, setCurrentPage, addPlantToCollection }) => {
-            const [showModal, setShowModal] = useState(false);
-
-            if (!scanResult) {
-                return <div className="p-6 text-center text-gray-500">No scan result available.</div>;
-            }
-
-            const plantData = {
-                name: scanResult.name,
-                commonName: scanResult.commonName,
-                confidence: scanResult.confidence,
-                imageUrl: scanResult.imageUrl // Save the image URL for the collection
-            };
-
-            const handleAddToCollection = async () => {
-                const response = await addPlantToCollection(plantData);
-                if (response.success) {
-                    setShowModal(true);
-                    setTimeout(() => setShowModal(false), 2000);
-                } else {
-                    alert(response.message); // Use alert for critical auth error
+                    await firestore.addDoc(collectionRef, newPlant);
+                } catch (e) {
+                    console.error("Error adding document: ", e);
+                    // Add UI error feedback here
                 }
-            };
+            }, [db, userId, appId, firestore, serverTimestamp]);
+
+            const deletePlant = useCallback(async (plantId) => {
+                if (!db || !userId || !firestore) return;
+                try {
+                    const docRef = getPath(db, appId, userId, 'plants', plantId);
+                    if (!docRef) return;
+                    await firestore.deleteDoc(docRef);
+                } catch (e) {
+                    console.error("Error deleting document: ", e);
+                    // Add UI error feedback here
+                }
+            }, [db, userId, appId, firestore]);
             
-            const handleRetake = () => {
-                setCurrentPage(PAGES.CAMERA);
-            };
-
-            return (
-                <div className="p-6">
-                    <div className="bg-white rounded-2xl shadow-xl overflow-hidden border border-gray-100">
-                        <img src={scanResult.imageUrl} alt={scanResult.commonName} className="w-full h-48 object-cover" onError={(e) => e.target.src='https://placehold.co/400x300/ccc/333?text=Plant+Image'} />
-                        
-                        <div className="p-5">
-                            <h3 className="text-sm font-semibold text-green-600">Identification Result</h3>
-                            <h1 className="text-3xl font-extrabold text-gray-900 mt-1 mb-2">{scanResult.commonName}</h1>
-                            <p className="text-lg italic text-gray-600 mb-4">{scanResult.name}</p>
-
-                            <div className="flex items-center mb-6 p-3 bg-green-50 rounded-lg">
-                                <IconCheckCircle className="w-5 h-5 text-green-600 mr-2 flex-shrink-0" />
-                                <span className="font-semibold text-green-700">Confidence: {scanResult.confidence}%</span>
-                            </div>
-
-                            <h4 className="text-lg font-semibold text-gray-800 mb-2">Description</h4>
-                            <p className="text-gray-600 mb-6">{scanResult.description}</p>
-                            
-                            <h4 className="text-lg font-semibold text-gray-800 mb-2">Toxicity Warning</h4>
-                            <div className="flex items-start mb-6 p-3 bg-yellow-50 rounded-lg border border-yellow-200">
-                                <IconAlertTriangle className="w-5 h-5 text-yellow-600 mr-2 flex-shrink-0 mt-1" />
-                                <p className="text-yellow-800 text-sm">
-                                    {scanResult.toxicity}
-                                </p>
-                            </div>
-
-                            <div className="flex space-x-3">
-                                <button
-                                    onClick={handleAddToCollection}
-                                    className="flex-1 flex items-center justify-center py-3 bg-blue-600 text-white font-semibold rounded-xl shadow-md hover:bg-blue-700 transition transform hover:scale-[1.02] active:scale-[0.98]"
-                                >
-                                    <IconGalleryVertical className="w-5 h-5 mr-2" /> Add to Collection
-                                </button>
-                                <button
-                                    onClick={handleRetake}
-                                    className="w-1/3 flex items-center justify-center py-3 bg-gray-200 text-gray-700 font-semibold rounded-xl shadow-md hover:bg-gray-300 transition transform hover:scale-[1.02] active:scale-[0.98]"
-                                >
-                                    <IconRefreshCw className="w-5 h-5" /> Retake
-                                </button>
-                            </div>
-                            
-                            
-                        </div>
-                    </div>
-                    {showModal && (
-                        <Modal title="Success!" onClose={() => setShowModal(false)}>
-                            <p className="text-gray-700">'{scanResult.commonName}' has been added to your personal collection!</p>
-                        </Modal>
-                    )}
-                </div>
-            );
+            return { addPlant, deletePlant };
         };
 
-        const CollectionsPage = ({ collections, loading }) => {
-            if (!loading && collections.length === 0) {
-                return (
-                    <div className="p-6 text-center pt-20">
-                        <IconBookOpen className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-                        <h2 className="text-xl font-semibold text-gray-700 mb-2">Your Collection is Empty</h2>
-                        <p className="text-gray-500">Identify a plant using the camera to start saving your finds!</p>
-                    </div>
-                );
-            }
+        // --- Components ---
 
-            return (
-                <div className="p-6">
-                    <h2 className="text-2xl font-bold text-gray-800 mb-6">My Plant Collections ({collections.length})</h2>
-                    {loading ? (
-                        <div className="text-center text-gray-500">Loading your treasures...</div>
-                    ) : (
-                        <div className="space-y-4">
-                            {collections.map((plant) => (
-                                <div key={plant.id} className="p-4 bg-white rounded-xl shadow-md border border-gray-100 flex justify-between items-center">
-                                    <div className="flex items-center space-x-4">
-                                        <div className="flex-shrink-0 w-16 h-16 rounded-lg overflow-hidden">
-                                            <img 
-                                                src={plant.imageUrl || 'https://placehold.co/64x64/E5E7EB/333?text=N/A'} 
-                                                alt={plant.commonName} 
-                                                className="w-full h-full object-cover"
-                                            />
-                                        </div>
-                                        <div>
-                                            <h3 className="text-lg font-semibold text-green-700">{plant.commonName}</h3>
-                                            <p className="text-sm italic text-gray-500">{plant.name}</p>
-                                            <p className="text-xs text-gray-400 mt-1">
-                                                Collected: {plant.collectedAt}
-                                            </p>
-                                        </div>
-                                    </div>
-                                    <IconTrash2 className="w-5 h-5 text-red-400 hover:text-red-600 cursor-pointer" title="Remove from Collection" />
-                                </div>
-                            ))}
-                        </div>
-                    )}
-                </div>
-            );
-        };
-        
-        const getRank = (score) => {
-            if (score >= RANKS.MASTER.score) return RANKS.MASTER;
-            if (score >= RANKS.JOURNEYMAN.score) return RANKS.JOURNEYMAN;
-            if (score >= RANKS.APPRENTICE.score) return RANKS.APPRENTICE;
-            return RANKS.SEEDLING;
-        };
-
-        const ProfilePage = ({ userData, signInWithGoogle, signOutUser, user, isAuthReady }) => {
-            const currentRank = getRank(userData?.score || 0);
-            
-            // Calculate progress to the next rank
-            const nextRankKey = Object.keys(RANKS).find(key => RANKS[key].score > currentRank.score);
-            const nextRank = nextRankKey ? RANKS[nextRankKey] : RANKS.MASTER;
-
-            const progress = currentRank === RANKS.MASTER 
-                ? 100 
-                : ((userData?.score || 0) - currentRank.score) / (nextRank.score - currentRank.score) * 100;
-
-            const currentScore = userData?.score || 0;
-            const targetScore = nextRank.score;
-            
-            return (
-                <div className="p-6">
-                    <h2 className="text-3xl font-bold text-gray-800 mb-6 flex items-center">
-                        <IconUser className="w-7 h-7 mr-2 text-green-600" /> My Profile
-                    </h2>
-
-                    <div className="mb-8 p-6 bg-white rounded-2xl shadow-lg border border-gray-100">
-                        <div className="flex items-center space-x-4 mb-4">
-                            <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center text-2xl border-2 border-green-500">
-                                {currentRank.icon}
-                            </div>
-                            <div>
-                                <h3 className="text-xl font-bold text-gray-900">{userData?.displayName}</h3>
-                                {user ? (
-                                    <p className="text-xs text-gray-500 truncate">UID: {user.uid}</p>
-                                ) : (
-                                    <p className="text-xs text-red-500">Not signed in.</p>
-                                )}
-                            </div>
-                        </div>
-
-                        <div className="mt-4">
-                            <h4 className="text-sm font-semibold text-gray-700">Current Rank: <span className={`${currentRank.color} text-base`}>{currentRank.name}</span></h4>
-                            <h4 className="text-sm font-semibold text-gray-700 mt-1">Total Identification Points: <span className="text-lg text-green-600">{currentScore}</span></h4>
-                        </div>
-                    </div>
-                    
-                    {/* Gamification Tracker */}
-                    <div className="mb-8 p-6 bg-white rounded-2xl shadow-lg border border-gray-100">
-                        <h4 className="text-xl font-bold text-gray-800 mb-3 flex items-center">
-                            <IconCrown className="w-5 h-5 mr-2 text-yellow-500" /> RootSage Mastery Level
-                        </h4>
-                        
-                        <p className="text-sm text-gray-600 mb-2">
-                            {currentRank === RANKS.MASTER 
-                                ? "You have achieved Master Root Sage status!" 
-                                : `Next Goal: ${nextRank.name} at ${targetScore} points.`}
-                        </p>
-
-                        <div className="w-full bg-gray-200 rounded-full h-3.5 mb-2">
-                            <div 
-                                className="bg-green-600 h-3.5 rounded-full transition-all duration-500" 
-                                style={{ width: `${progress}%` }}
-                            ></div>
-                        </div>
-                        
-                        <div className="flex justify-between text-xs text-gray-500">
-                            <span>{currentRank.name}</span>
-                            <span>{currentScore}/{targetScore} points</span>
-                            {currentRank !== RANKS.MASTER && <span>{nextRank.name}</span>}
-                        </div>
-                    </div>
-
-
-                    {/* Auth Actions */}
-                    <div className="mt-8">
-                        {user ? (
-                            <button
-                                onClick={signOutUser}
-                                className="w-full py-3 bg-red-600 text-white font-bold rounded-xl shadow-lg hover:bg-red-700 transition transform hover:scale-[1.01] active:scale-[0.99]"
-                                disabled={!isAuthReady}
-                            >
-                                Sign Out ({user.displayName || user.email})
-                            </button>
-                        ) : (
-                            <button
-                                onClick={signInWithGoogle}
-                                className="w-full py-3 bg-blue-600 text-white font-bold rounded-xl shadow-lg hover:bg-blue-700 transition transform hover:scale-[1.01] active:scale-[0.99] flex items-center justify-center"
-                                disabled={!isAuthReady}
-                            >
-                                <svg className="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 48 48">
-                                    <path d="M44.5 20H24v8.5h11.8c-.7 4.5-4.8 7.2-9.8 7.2-6.5 0-11.8-5.3-11.8-11.8s5.3-11.8 11.8-11.8c3.2 0 6.2 1.3 8.3 3.4l6-6c-3.6-3.4-8.7-5.4-14.3-5.4-11.8 0-21.5 9.7-21.5 21.5s9.7 21.5 21.5 21.5c11.3 0 19.8-8 19.8-19.8 0-1.3-.2-2.7-.4-4z" clipRule="evenodd"/><path fill="#34A853" d="M10.8 24c0-2.4.4-4.7 1.2-6.8l-5.6-4.3c-2.3 4.8-3.6 10.2-3.6 15.6 0 5.4 1.3 10.8 3.6 15.6l5.6-4.3c-.8-2.1-1.2-4.4-1.2-6.8z"/><path fill="#4285F4" d="M44.5 20H24v8.5h11.8c-.7 4.5-4.8 7.2-9.8 7.2-6.5 0-11.8-5.3-11.8-11.8s5.3-11.8 11.8-11.8c3.2 0 6.2 1.3 8.3 3.4l6-6c-3.6-3.4-8.7-5.4-14.3-5.4-11.8 0-21.5 9.7-21.5 21.5s9.7 21.5 21.5 21.5c11.3 0 19.8-8 19.8-19.8 0-1.3-.2-2.7-.4-4z" clipRule="evenodd"/><path fill="#FBBC04" d="M12 30.5c0-1.6.3-3.2.8-4.7l-5.6-4.3c-1.2 2.5-1.9 5.3-1.9 8.2 0 2.9.7 5.7 1.9 8.2l5.6-4.3c-.5-1.5-.8-3.1-.8-4.7z"/><path fill="#EA4335" d="M24 6c3.2 0 6.2 1.3 8.3 3.4l6-6c-3.6-3.4-8.7-5.4-14.3-5.4C12.2 0 2.5 9.7 2.5 21.5h10.3c0-6.5 5.3-11.8 11.2-11.8z"/>
-                                </svg>
-                                Sign In with Google
-                            </button>
-                        )}
-                    </div>
-                </div>
-            );
-        };
-        
-        const CommunityPage = () => (
-            <div className="p-6 text-center pt-20">
-                <IconShare2 className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-                <h2 className="text-2xl font-semibold text-gray-700 mb-2">Community Verification</h2>
-                <p className="text-gray-500">
-                    This feature is coming soon! You will be able to submit your plant identifications for review by other Master Root Sages.
-                </p>
+        const LoadingSpinner = () => (
+            <div className="flex justify-center items-center h-full min-h-64">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-green-600"></div>
+                <p className="ml-4 text-gray-500">Loading...</p>
             </div>
         );
-
 
         const NavBar = ({ currentPage, setCurrentPage }) => {
-            const tabs = [
+            const navItems = [
+                { page: PAGES.HOME, icon: IconHome, label: 'Home' },
                 { page: PAGES.CAMERA, icon: IconCamera, label: 'Identify' },
-                { page: PAGES.COLLECTIONS, icon: IconGalleryVertical, label: 'Collections' },
-                { page: PAGES.COMMUNITY, icon: IconBookOpen, label: 'Community' },
-                { page: PAGES.PROFILE, icon: IconUser, label: 'Profile' },
+                { page: PAGES.LIBRARY, icon: IconBookOpen, label: 'Library' },
+                { page: PAGES.STEWARDSHIP, icon: IconHeart, label: 'Stewardship' },
             ];
 
             return (
-                <nav className="fixed bottom-0 left-0 right-0 max-w-lg mx-auto bg-white border-t border-gray-200 shadow-xl z-20">
-                    <div className="flex justify-around h-16">
-                        {tabs.map(({ page, icon: Icon, label }) => (
-                            <button
-                                key={page}
-                                onClick={() => setCurrentPage(page)}
-                                className={`flex flex-col items-center justify-center p-2 text-sm transition duration-150 ${
-                                    currentPage === page 
-                                        ? 'text-green-600 font-bold border-t-2 border-green-600 -mt-px'
-                                        : 'text-gray-500 hover:text-green-500'
-                                }`}
-                            >
-                                <Icon className="w-6 h-6" />
-                                <span className="text-xs mt-0.5">{label}</span>
-                            </button>
-                        ))}
+                <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 shadow-lg z-20">
+                    <div className="flex justify-around items-center h-16 max-w-lg mx-auto">
+                        {navItems.map(item => {
+                            const Icon = item.icon;
+                            const isActive = currentPage === item.page;
+                            return (
+                                <button
+                                    key={item.page}
+                                    onClick={() => setCurrentPage(item.page)}
+                                    className={`flex flex-col items-center p-2 transition-colors duration-200 ${
+                                        isActive ? 'text-green-600' : 'text-gray-500 hover:text-green-600'
+                                    }`}
+                                >
+                                    <Icon className="w-5 h-5 mb-0.5" />
+                                    <span className="text-xs font-medium">{item.label}</span>
+                                </button>
+                            );
+                        })}
                     </div>
                 </nav>
             );
         };
-        
 
-        const App = () => {
-            // FIX: Set initial page to SPLASH so the useEffect can reliably transition to STEWARDSHIP once auth is ready
-            const [currentPage, setCurrentPage] = useState(PAGES.SPLASH);
-            const [scanResult, setScanResult] = useState(null);
-
-            // Auth and Firestore setup
-            const { user, isAuthReady, dbInstance, signInWithGoogle, signOutUser, userId } = useAuth();
+        const SplashPage = () => {
+            // FIX: setCurrentPage is now correctly retrieved from useAppState
+            const { setCurrentPage } = useAppState(); 
             
-            // Wait for auth to be ready before fetching user data
-            const { userData, updateScore } = useUserData(userId, dbInstance, isAuthReady);
-
-            // Collections hook
-            const { collections, loading: collectionsLoading, addPlantToCollection } = useCollections(dbInstance, isAuthReady, userId);
-
-            // Transition from SPLASH to STEWARDSHIP/CAMERA when authentication is settled
             useEffect(() => {
-                if (isAuthReady && currentPage === PAGES.SPLASH) {
-                    // Start at the stewardship agreement for new users, or directly to camera for returning users
-                    setCurrentPage(PAGES.STEWARDSHIP); 
-                }
-            }, [isAuthReady, currentPage]);
+                const timer = setTimeout(() => {
+                    setCurrentPage(PAGES.DISCLAIMER);
+                }, 3000); // 3 second splash screen
+                return () => clearTimeout(timer);
+            }, [setCurrentPage]);
 
+            return (
+                <div className="flex flex-col items-center justify-center h-screen bg-gradient-to-br from-green-500 to-green-700 p-8">
+                    <IconLeaf className="w-20 h-20 text-white animate-bounce" />
+                    <h1 className="text-5xl font-extrabold text-white mt-4 tracking-tighter">RootSage</h1>
+                    <p className="text-white text-opacity-80 mt-2 text-xl italic">Nature, Identified.</p>
+                </div>
+            );
+        };
 
-            const renderPage = () => {
-                // Global Loading Screen while waiting for Auth to settle
-                if (!isAuthReady) {
-                    return (
-                        <div className="flex flex-col items-center justify-center h-full text-gray-500">
-                            <svg className="animate-spin h-8 w-8 text-green-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                            </svg>
-                            <p className="mt-4">Securing your connection...</p>
+        const DisclaimerPage = () => {
+            const { setCurrentPage } = useAppState();
+
+            const disclaimerItems = [
+                {
+                    icon: IconShieldCheck,
+                    title: "Identification Accuracy",
+                    description: "RootSage uses advanced AI, but identification is not 100% guaranteed. Always confirm with a local expert before ingesting or handling unknown plants, especially for medical or toxic concerns.",
+                },
+                {
+                    icon: IconDroplet,
+                    title: "Toxicity Disclaimer",
+                    description: "Identification is not a measure of toxicity. Many plants are toxic. Do not consume any part of an identified plant based solely on this app's results.",
+                },
+                {
+                    icon: IconSun,
+                    title: "Regional Variance",
+                    description: "Plant characteristics can vary significantly by region and season. The app's results are a guide, not a definitive botanical resource.",
+                },
+            ];
+
+            return (
+                <div className="p-6 h-full flex flex-col justify-between max-w-lg mx-auto">
+                    <div>
+                        <h2 className="text-3xl font-extrabold text-green-700 mb-4">Important Disclaimer</h2>
+                        <p className="text-gray-600 mb-8">Please read the following carefully before proceeding to use RootSage.</p>
+
+                        <div className="space-y-6">
+                            {disclaimerItems.map((item, index) => {
+                                const Icon = item.icon;
+                                return (
+                                    <div key={index} className="flex items-start p-4 bg-green-50 rounded-xl shadow-sm border border-green-200">
+                                        <Icon className="w-6 h-6 text-green-600 flex-shrink-0 mt-1" />
+                                        <div className="ml-4">
+                                            <h3 className="font-semibold text-lg text-gray-800">{item.title}</h3>
+                                            <p className="text-sm text-gray-600">{item.description}</p>
+                                        </div>
+                                    </div>
+                                );
+                            })}
                         </div>
-                    );
-                }
+                    </div>
 
-                switch (currentPage) {
-                    case PAGES.SPLASH:
-                        return null; // Handled by useEffect, shows loading spinner above
-                    case PAGES.STEWARDSHIP:
-                        return <StewardshipPage setCurrentPage={setCurrentPage} />;
-                    case PAGES.CAMERA:
-                        return <CameraPage setCurrentPage={setCurrentPage} setScanResult={setScanResult} updateScore={updateScore} />;
-                    case PAGES.IDENTIFICATION:
-                        return <IdentificationPage 
-                            scanResult={scanResult} 
-                            setCurrentPage={setCurrentPage} 
-                            addPlantToCollection={addPlantToCollection} 
-                        />;
-                    case PAGES.COLLECTIONS:
-                        return <CollectionsPage collections={collections} loading={collectionsLoading} />;
-                    case PAGES.PROFILE:
-                        return <ProfilePage 
-                            userData={userData} 
-                            signInWithGoogle={signInWithGoogle} 
-                            signOutUser={signOutUser} 
-                            user={user}
-                            isAuthReady={isAuthReady}
-                        />;
-                    case PAGES.COMMUNITY:
-                        return <CommunityPage />;
-                    default:
-                        // Default to Camera page if state is somehow invalid
-                        return <CameraPage setCurrentPage={setCurrentPage} setScanResult={setScanResult} updateScore={updateScore} />;
+                    <div className="pt-8">
+                        <button
+                            onClick={() => setCurrentPage(PAGES.HOME)}
+                            className="w-full bg-green-600 text-white py-3 rounded-xl font-bold text-lg hover:bg-green-700 transition duration-150 shadow-lg"
+                        >
+                            I Understand and Agree
+                        </button>
+                    </div>
+                </div>
+            );
+        };
+
+        const HomePage = () => {
+            const { setCurrentPage } = useAppState();
+            const { plants, loading } = useUserPlants();
+            
+            // Sort plants by createdAt descending, then show 3 most recent
+            const sortedPlants = useMemo(() => {
+                if (!plants) return [];
+                return plants
+                    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+                    .slice(0, 3);
+            }, [plants]);
+
+            const mockTips = [
+                "Water your fiddle leaf fig when the top inch of soil is dry.",
+                "Pinch back basil leaves to encourage bushier growth.",
+                "Check for pests like spider mites on the undersides of leaves."
+            ];
+
+            return (
+                <div className="p-4 space-y-6 max-w-lg mx-auto">
+                    
+                    {/* Quick Identify Card */}
+                    <div className="bg-white p-6 rounded-2xl shadow-xl border border-green-100">
+                        <h2 className="text-2xl font-bold text-gray-800 mb-4 flex items-center">
+                            <IconCamera className="w-6 h-6 mr-2 text-green-600"/> Quick Identify
+                        </h2>
+                        <p className="text-gray-600 mb-4">Ready to find out what that plant is? Tap below to open your camera.</p>
+                        <button
+                            onClick={() => setCurrentPage(PAGES.CAMERA)}
+                            className="w-full bg-green-600 text-white py-3 rounded-xl font-bold text-lg hover:bg-green-700 transition duration-150 flex items-center justify-center shadow-md shadow-green-300"
+                        >
+                            <IconCamera className="w-5 h-5 mr-2" />
+                            Open Camera
+                        </button>
+                    </div>
+
+                    {/* Recent Identifications */}
+                    <div className="bg-white p-6 rounded-2xl shadow-xl border border-gray-100">
+                        <h2 className="text-2xl font-bold text-gray-800 mb-4 flex items-center">
+                            <IconBookOpen className="w-6 h-6 mr-2 text-gray-500"/> Recent Identifications
+                        </h2>
+                        
+                        {loading && <LoadingSpinner />}
+
+                        {!loading && sortedPlants.length === 0 && (
+                            <div className="text-center py-4 text-gray-500">
+                                <IconSearch className="w-8 h-8 mx-auto mb-2 text-gray-300"/>
+                                <p>Start identifying plants to build your library!</p>
+                            </div>
+                        )}
+
+                        {!loading && sortedPlants.length > 0 && (
+                            <div className="space-y-4">
+                                {sortedPlants.map(plant => (
+                                    <div 
+                                        key={plant.id} 
+                                        className="flex items-center p-3 bg-gray-50 rounded-xl hover:bg-gray-100 transition cursor-pointer"
+                                        onClick={() => setCurrentPage(PAGES.DETAIL)} // Placeholder action
+                                    >
+                                        <div className="w-10 h-10 bg-green-200 rounded-full flex items-center justify-center flex-shrink-0 overflow-hidden">
+                                            {/* Placeholder for image */}
+                                            <IconLeaf className="w-5 h-5 text-green-700"/>
+                                        </div>
+                                        <div className="ml-4 flex-grow">
+                                            <p className="font-semibold text-gray-800 truncate">{plant.name || 'Unidentified Plant'}</p>
+                                            <p className="text-sm text-gray-500">Identified on {new Date(plant.createdAt).toLocaleDateString()}</p>
+                                        </div>
+                                        <IconX className="w-4 h-4 text-gray-400 ml-2 transform rotate-45"/>
+                                    </div>
+                                ))}
+                                {plants.length > 3 && (
+                                    <button 
+                                        onClick={() => setCurrentPage(PAGES.LIBRARY)}
+                                        className="w-full text-sm text-green-600 font-medium pt-2 hover:text-green-700"
+                                    >
+                                        View All ({plants.length})
+                                    </button>
+                                )}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Gardening Tips */}
+                    <div className="bg-white p-6 rounded-2xl shadow-xl border border-gray-100">
+                        <h2 className="text-2xl font-bold text-gray-800 mb-4 flex items-center">
+                            <IconSettings className="w-6 h-6 mr-2 text-blue-500"/> Daily Gardening Tip
+                        </h2>
+                        <div className="bg-blue-50 p-4 rounded-xl border border-blue-200">
+                            <p className="text-blue-700 italic">"{mockTips[0]}"</p>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+
+        const PlaceholderPage = ({ title, icon: Icon, description }) => {
+            const { setCurrentPage } = useAppState();
+
+            return (
+                <div className="flex flex-col items-center justify-center p-6 text-center h-full max-w-lg mx-auto">
+                    <Icon className="w-16 h-16 text-green-500 mb-4" />
+                    <h2 className="text-3xl font-bold text-gray-800 mb-3">{title}</h2>
+                    <p className="text-gray-600 mb-8">{description}</p>
+                    {title !== "Camera" && (
+                        <button
+                            onClick={() => setCurrentPage(PAGES.HOME)}
+                            className="bg-green-600 text-white py-2 px-6 rounded-xl font-semibold hover:bg-green-700 transition duration-150 shadow-md"
+                        >
+                            Go to Home
+                        </button>
+                    )}
+                    {title === "Camera" && (
+                        <div className="w-full">
+                            <div className="h-64 bg-gray-200 rounded-2xl flex items-center justify-center mb-6">
+                                <span className="text-gray-500">Camera Feed Placeholder</span>
+                            </div>
+                            <button
+                                onClick={() => {
+                                    // Mock identification result and navigate to detail
+                                    console.log("Mocking plant identification...");
+                                    const mockPlant = {
+                                        name: "Monstera Deliciosa",
+                                        confidence: "98%",
+                                        isToxic: false,
+                                        care: "Water deeply, bright indirect light."
+                                    };
+                                    // In a real app, this would be an API call, and we'd save/navigate.
+                                    setCurrentPage(PAGES.DETAIL);
+                                }}
+                                className="w-full bg-green-600 text-white py-3 rounded-xl font-bold text-lg hover:bg-green-700 transition duration-150 flex items-center justify-center shadow-md shadow-green-300"
+                            >
+                                <IconZap className="w-5 h-5 mr-2" />
+                                Identify Plant
+                            </button>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const PlantDetailPage = () => {
+            const { setCurrentPage } = useAppState();
+            const { deletePlant } = usePlantActions();
+
+            // Mock Data for demonstration
+            const plant = {
+                id: 'mock-123',
+                name: "Monstera Deliciosa",
+                scientificName: "Swiss Cheese Plant",
+                confidence: "98%",
+                isToxic: false,
+                imageURL: "https://placehold.co/400x300/a7f3d0/065f46?text=Monstera+Mock",
+                careTips: [
+                    "Bright, indirect sunlight is best.",
+                    "Water when the top 2 inches of soil are dry.",
+                    "Wipe leaves occasionally to promote photosynthesis.",
+                    "Fertilize once a month during growing season."
+                ],
+                toxicity: "Mildly toxic to pets and humans if ingested.",
+                lastIdentified: "October 10, 2025",
+                stewardship: {
+                    level: 3, // 1 to 5
+                    description: "High air purification and aesthetic value."
                 }
             };
 
+            const handleDelete = async () => {
+                // IMPORTANT: Since we cannot use confirm(), we'll use a console log placeholder for now.
+                console.log("Confirming deletion. Implement custom modal UI here.");
+                // In a real app, you'd show a modal/dialog for confirmation:
+                // if (await showConfirmationModal("Are you sure?")) {
+                //     await deletePlant(plant.id); 
+                //     setCurrentPage(PAGES.LIBRARY);
+                // }
+                
+                // For demonstration, mock a successful delete after a delay
+                setTimeout(() => {
+                    setCurrentPage(PAGES.LIBRARY);
+                }, 100);
+            };
+
+            const StewardshipIcon = IconHeart; // Placeholder logic
 
             return (
-                <div id="app-container" className="flex flex-col h-full">
-                    <div className="flex flex-col h-full w-full max-w-lg mx-auto overflow-hidden">
-                        {/* Header for non-splash/non-stewardship pages */}
-                        {currentPage !== PAGES.SPLASH && currentPage !== PAGES.STEWARDSHIP && (
+                <div className="p-4 max-w-lg mx-auto">
+                    <div className="bg-white rounded-2xl shadow-xl overflow-hidden mb-4">
+                        {/* Image/Header */}
+                        <img 
+                            src={plant.imageURL} 
+                            alt={plant.name} 
+                            className="w-full h-64 object-cover"
+                            onError={(e) => { e.target.onerror = null; e.target.src = "https://placehold.co/400x300/e0f2f1/065f46?text=Image+Not+Found"; }}
+                        />
+                        
+                        <div className="p-6">
+                            <h1 className="text-3xl font-extrabold text-green-700">{plant.name}</h1>
+                            <p className="text-lg italic text-gray-500 mb-4">{plant.scientificName}</p>
+
+                            {/* Key Stats */}
+                            <div className="flex justify-between items-center border-t border-b py-3 mb-6">
+                                <div className="text-center">
+                                    <p className="text-xs font-medium text-gray-500">CONFIDENCE</p>
+                                    <p className="text-xl font-bold text-green-600">{plant.confidence}</p>
+                                </div>
+                                <div className="text-center">
+                                    <p className="text-xs font-medium text-gray-500">TOXICITY</p>
+                                    <p className={`text-xl font-bold ${plant.isToxic ? 'text-red-500' : 'text-green-500'}`}>
+                                        {plant.isToxic ? 'Yes' : 'No'}
+                                    </p>
+                                </div>
+                                <div className="text-center">
+                                    <p className="text-xs font-medium text-gray-500">STEWARDSHIP</p>
+                                    <div className="flex justify-center">
+                                        {[...Array(plant.stewardship.level)].map((_, i) => (
+                                            <StewardshipIcon key={i} className="w-5 h-5 text-green-500 fill-green-500 mx-0.5" />
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Care Tips */}
+                            <h2 className="text-2xl font-bold text-gray-800 mb-3 flex items-center">
+                                <IconCheck className="w-5 h-5 mr-2 text-green-600"/> Care Tips
+                            </h2>
+                            <ul className="space-y-2 mb-6 list-disc list-inside text-gray-600">
+                                {plant.careTips.map((tip, index) => (
+                                    <li key={index} className="text-sm">{tip}</li>
+                                ))}
+                            </ul>
+
+                            {/* Toxicity Info */}
+                            <h2 className="text-2xl font-bold text-gray-800 mb-3 flex items-center">
+                                <IconDroplet className="w-5 h-5 mr-2 text-red-600"/> Safety
+                            </h2>
+                            <div className={`p-4 rounded-xl text-sm ${plant.isToxic ? 'bg-red-50 text-red-800 border border-red-200' : 'bg-green-50 text-green-800 border border-green-200'}`}>
+                                {plant.toxicity}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    {/* Actions */}
+                    <div className="flex justify-between space-x-4 mb-20">
+                        <button
+                            onClick={() => setCurrentPage(PAGES.LIBRARY)}
+                            className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-xl font-semibold hover:bg-gray-200 transition duration-150 flex items-center justify-center shadow-md"
+                        >
+                            <IconBookOpen className="w-5 h-5 mr-2"/> Back to Library
+                        </button>
+                        <button
+                            onClick={handleDelete}
+                            className="flex-1 bg-red-500 text-white py-3 rounded-xl font-semibold hover:bg-red-600 transition duration-150 flex items-center justify-center shadow-md"
+                        >
+                            <IconTrash2 className="w-5 h-5 mr-2"/> Delete Record
+                        </button>
+                    </div>
+                </div>
+            );
+        };
+
+
+        // --- Main App Component ---
+
+        const App = () => {
+            // FIX: currentPage and setCurrentPage are now managed by AppProvider
+            const { currentPage, setCurrentPage, isAuthReady, userId } = useAppState(); 
+
+            const renderPage = () => {
+                switch (currentPage) {
+                    case PAGES.SPLASH:
+                        return <SplashPage />;
+                    case PAGES.DISCLAIMER:
+                        return <DisclaimerPage />;
+                    case PAGES.HOME:
+                        return <HomePage />;
+                    case PAGES.CAMERA:
+                        return <PlaceholderPage title="Camera" icon={IconCamera} description="Use your camera to identify a new plant!" />;
+                    case PAGES.LIBRARY:
+                        return <PlaceholderPage title="My Library" icon={IconBookOpen} description="All your identified plants in one place. Your growing story starts here!" />;
+                    case PAGES.PROFILE:
+                        // Placeholder for a settings/user profile page
+                        return <PlaceholderPage title={`User: ${userId}`} icon={IconSettings} description={`This is your unique user ID for persistence: ${userId.substring(0, 8)}...`} />;
+                    case PAGES.STEWARDSHIP:
+                        return <PlaceholderPage title="Plant Stewardship" icon={IconHeart} description="Learn how to care for plants and contribute to a healthier planet." />;
+                    case PAGES.DETAIL:
+                        return <PlantDetailPage />;
+                    default:
+                        return <PlaceholderPage title="Page Not Found" icon={IconX} description="Oops! We can't find the page you're looking for." />;
+                }
+            };
+
+            if (!isAuthReady) {
+                return <LoadingSpinner />;
+            }
+            
+            return (
+                <div className="min-h-screen bg-gray-50 flex justify-center">
+                    <div className="w-full max-w-lg flex flex-col min-h-screen relative bg-white shadow-xl overflow-hidden">
+                        
+                        {currentPage !== PAGES.SPLASH && currentPage !== PAGES.CAMERA && currentPage !== PAGES.DISCLAIMER && (
                             <header className="sticky top-0 bg-white p-4 border-b border-gray-200 flex items-center justify-between z-10">
                                 <h1 className="text-xl font-bold text-green-700 flex items-center">
                                     <IconLeaf className="w-6 h-6 mr-1" /> RootSage
@@ -898,34 +835,19 @@
                             </header>
                         )}
 
-                        <main className={`flex-grow overflow-y-auto ${currentPage !== PAGES.SPLASH && currentPage !== PAGES.STEWARDSHIP && 'mb-16'} ${currentPage === PAGES.SPLASH || currentPage === PAGES.STEWARDSHIP ? 'h-full' : 'pb-16'}`}>
+                        <main className={`flex-grow overflow-y-auto ${currentPage !== PAGES.SPLASH && currentPage !== PAGES.STEWARDSHIP && 'mb-16'} ${currentPage === PAGES.SPLASH || currentPage === PAGES.STEWARDSHIP ? 'h-screen' : 'pb-16'}`}>
                             {renderPage()}
                         </main>
 
-                        {currentPage !== PAGES.SPLASH && currentPage !== PAGES.STEWARDSHIP && <NavBar currentPage={currentPage} setCurrentPage={setCurrentPage} />}
+                        {currentPage !== PAGES.SPLASH && currentPage !== PAGES.DISCLAIMER && <NavBar currentPage={currentPage} setCurrentPage={setCurrentPage} />}
                     </div>
                 </div>
             );
         };
 
-        // --- FIXED: Reliable React Rendering Logic ---
-        
-        const tryRenderApp = () => {
-            // Check the flag set by the Firebase module script
-            if (window.FIREBASE_LOADED) {
-                ReactDOM.createRoot(document.getElementById('root')).render(<App />);
-                // Remove the listener once rendered
-                document.removeEventListener('firebase-ready', tryRenderApp);
-            }
-        };
+        // FIX: AppProvider now wraps App and manages the central state.
+        ReactDOM.createRoot(document.getElementById('root')).render(<AppProvider><App /></AppProvider>);
 
-        // Attempt to render immediately if Firebase loaded quickly
-        tryRenderApp();
-
-        // Listen for the custom event in case Firebase loading lagged (robust)
-        document.addEventListener('firebase-ready', tryRenderApp);
-        
-        // --- End of RootSageApp.jsx code ---
     </script>
 </body>
 </html>
