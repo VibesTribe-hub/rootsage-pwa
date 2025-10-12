@@ -289,9 +289,9 @@
         // --- Consolidated App Provider ---
 
         const AppProvider = ({ children }) => {
-            // FIX: Start directly on HOME to bypass potential issues with initial splash/disclaimer states
+            // Start directly on HOME to bypass potential issues with initial splash/disclaimer states
             const [currentPage, setCurrentPage] = useState(PAGES.HOME); 
-            // NEW STATE: To hold data for the plant currently being viewed (e.g., after identification or clicking in library)
+            // NEW STATE: To hold data for the plant currently being viewed
             const [selectedPlant, setSelectedPlant] = useState(null); 
             const [db, setDb] = useState(null); // Firebase State
             const [auth, setAuth] = useState(null);
@@ -460,7 +460,10 @@
                 try {
                     const response = await fetch(url, options);
                     if (!response.ok) {
-                        throw new Error(`HTTP error! status: ${response.status}`);
+                        // Check for common API errors like 400 (Bad Request) or 429 (Rate Limit)
+                        const errorBody = await response.text();
+                        console.error("API Response Error Body:", errorBody);
+                        throw new Error(`HTTP error! Status: ${response.status}. Details: ${errorBody.substring(0, 100)}...`);
                     }
                     return response;
                 } catch (error) {
@@ -468,7 +471,7 @@
                         throw error;
                     }
                     // Exponential backoff
-                    const delay = Math.pow(2, i) * 1000 + Math.random() * 1000;
+                    const delay = Math.pow(2, i) * 1000 + Math.random() * 500; // Reduced max delay slightly
                     await new Promise(resolve => setTimeout(resolve, delay));
                 }
             }
@@ -476,15 +479,20 @@
         
         /**
          * Resizes a data URL (image) to a specified maximum width/height and returns the new base64 data.
-         * This solves the large file size issue by downscaling images on the client side before API call.
+         * Forces output to JPEG format.
          * @param {string} dataUrl - The original base64 image data URL (e.g., 'data:image/jpeg;base64,...').
          * @param {number} maxWidth - Maximum width for the resized image.
          * @param {number} maxHeight - Maximum height for the resized image.
          * @returns {Promise<{dataURL: string, base64: string, mimeType: string}>} - The resized image data.
          */
         const resizeImage = (dataUrl, maxWidth = 1024, maxHeight = 1024) => {
-            return new Promise((resolve) => {
+            return new Promise((resolve, reject) => {
                 const img = new Image();
+                
+                img.onerror = (e) => {
+                    reject(new Error("Failed to load image for resizing. Invalid data URL."));
+                };
+
                 img.onload = () => {
                     let width = img.width;
                     let height = img.height;
@@ -511,7 +519,7 @@
                     // Draw the image scaled to new dimensions
                     ctx.drawImage(img, 0, 0, width, height);
                     
-                    // Convert canvas back to data URL, force JPEG for smaller size
+                    // Convert canvas back to data URL, force JPEG for smaller size and compatibility
                     const mimeType = 'image/jpeg';
                     const newQuality = 0.8; // Use 80% quality for good compression
                     const newDataUrl = canvas.toDataURL(mimeType, newQuality);
@@ -601,7 +609,7 @@
                         <h2 className="text-2xl font-bold text-gray-800 mb-4 flex items-center">
                             <IconCamera className="w-6 h-6 mr-2 text-green-600"/> Quick Identify
                         </h2>
-                        <p className="text-gray-600 mb-4">Ready to find out what that plant is? Tap below to open your camera/uploader.</p>
+                        <p className="text-gray-600 mb-4">Tap below to open the identifier. Remember, **direct camera access may be blocked** on GitHub Pages; use the **Upload** option instead.</p>
                         <button
                             onClick={() => setCurrentPage(PAGES.CAMERA)}
                             className="w-full bg-green-600 text-white py-3 rounded-xl font-bold text-lg hover:bg-green-700 transition duration-150 flex items-center justify-center shadow-md shadow-green-300"
@@ -692,7 +700,8 @@
             // State for image data and process
             const [imagePreviewUrl, setImagePreviewUrl] = useState(null);
             const [base64Image, setBase64Image] = useState(null);
-            const [mimeType, setMimeType] = useState(null);
+            // CRITICAL FIX: Ensure mimeType is always 'image/jpeg' for API
+            const [mimeType, setMimeType] = useState('image/jpeg'); 
             const [isLoading, setIsLoading] = useState(false);
             const [error, setError] = useState(null);
 
@@ -736,8 +745,8 @@
                     console.error("Error accessing camera: ", err);
                     // Handle common errors like permission denied or no suitable camera found
                     const msg = err.name === 'NotAllowedError' 
-                        ? "Camera access was denied. Please check your browser's permissions."
-                        : "Camera device not found or inaccessible. You can still upload a photo.";
+                        ? "Camera access was denied. (Likely blocked by unsecured context - use Upload instead)."
+                        : "Camera device not found or inaccessible. Please use the Upload Photo option.";
                     setPermissionError(msg);
                     setIsCameraActive(false);
                 }
@@ -778,18 +787,20 @@
                 // Draw the current video frame onto the canvas
                 ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-                // Convert canvas to data URL (this implicitly resizes to canvas size)
+                // CRITICAL FIX: Use resizeImage to ensure proper JPEG conversion and sizing
                 const dataURL = canvas.toDataURL('image/jpeg', 0.9);
                 
-                // We will skip the full resize here since canvas drawing is usually sufficient to downsize from high-res sensors.
-                // However, let's keep the logic consistent by converting it to the data structure needed.
-                const base64Data = dataURL.split(',')[1];
-                const type = 'image/jpeg';
-                
-                setImagePreviewUrl(dataURL);
-                setBase64Image(base64Data);
-                setMimeType(type);
-                setError(null);
+                try {
+                     const resizedData = await resizeImage(dataURL);
+                    
+                    setImagePreviewUrl(resizedData.dataURL);
+                    setBase64Image(resizedData.base64);
+                    setMimeType(resizedData.mimeType); // Should be 'image/jpeg'
+                    setError(null);
+                } catch (e) {
+                    setError("Capture failed during image processing.");
+                    console.error("Capture image processing error:", e);
+                }
             };
 
             // 3. Image Select from File (Fallback for Gallery Upload)
@@ -810,18 +821,19 @@
                     reader.onloadend = async () => {
                         const originalDataURL = reader.result;
                         
-                        // --- NEW: Client-side Resizing ---
+                        // CRITICAL FIX: Client-side Resizing and forcing JPEG conversion
                         const resizedData = await resizeImage(originalDataURL);
 
                         setImagePreviewUrl(resizedData.dataURL);
                         setBase64Image(resizedData.base64);
-                        setMimeType(resizedData.mimeType);
+                        setMimeType(resizedData.mimeType); // Should be 'image/jpeg'
                         setError(null);
                         setIsLoading(false);
                     };
                     reader.readAsDataURL(file);
                 } catch (e) {
-                    setError("Could not process file. Ensure it is a valid image.");
+                    // Detailed error message for file processing failure
+                    setError("Could not process file. Ensure it is a valid image (JPG/PNG).");
                     console.error("File processing error:", e);
                     setIsLoading(false);
                 }
@@ -831,7 +843,7 @@
             const handleClearPhoto = () => {
                 setImagePreviewUrl(null);
                 setBase64Image(null);
-                setMimeType(null);
+                // MimeType remains 'image/jpeg' as that is the standard API expectation
                 setError(null);
                 // Camera will attempt to restart via the useEffect dependency on imagePreviewUrl
             };
@@ -847,8 +859,9 @@
 
             // 6. Gemini API Call
             const identifyPlant = async () => {
-                if (!base64Image || !mimeType) {
-                    setError("Please select a photo of a plant first."); 
+                if (!base64Image || mimeType !== 'image/jpeg') {
+                    // Fallback check to ensure data integrity
+                    setError("Image data is corrupt or not properly converted to JPEG. Please re-upload."); 
                     return;
                 }
 
@@ -865,7 +878,8 @@
                     contents: [{
                         parts: [
                             { text: userQuery },
-                            { inlineData: { mimeType: mimeType, data: base64Image } }
+                            // Use the stored base64Image and the guaranteed 'image/jpeg' mimeType
+                            { inlineData: { mimeType: mimeType, data: base64Image } } 
                         ]
                     }],
                     systemInstruction: { parts: [{ text: systemPrompt }] },
@@ -908,21 +922,22 @@
                         if (savedPlant) {
                             setCurrentPage(PAGES.DETAIL);
                         } else {
-                             setError("Identification successful, but failed to save to library.");
+                             setError("Identification successful, but failed to save to library. (Firestore error)");
                         }
                     } else {
-                        setError("Identification failed. Could not parse response from AI. Please try a clearer image.");
+                        setError("Identification failed. Could not parse response from AI. Response was likely empty or malformed.");
                         console.error("AI Response Error:", result);
                     }
                 } catch (e) {
-                    setError("API call failed. Please check connection or try again later.");
+                    // Display the detailed error from fetchWithRetry
+                    setError(`API call failed: ${e.message}`);
                     console.error("Fetch/API Error:", e);
                 } finally {
                     setIsLoading(false);
                     // Reset to initial state after processing (useEffect will handle camera restart)
                     setImagePreviewUrl(null);
                     setBase64Image(null);
-                    setMimeType(null);
+                    // MimeType remains 'image/jpeg'
                 }
             };
             
@@ -943,8 +958,8 @@
                         <IconX className="w-10 h-10 mx-auto mb-2"/>
                         <p className="font-semibold text-lg">Camera Unavailable</p>
                         <p className="text-sm mt-1">{permissionError}</p>
-                        <button onClick={startCamera} className="mt-4 text-green-600 font-semibold flex items-center">
-                            <IconCamera className="w-4 h-4 mr-1"/> Try Requesting Access Again
+                        <button onClick={handleFileClick} className="mt-4 bg-green-600 text-white py-2 px-4 rounded-xl font-semibold flex items-center shadow-md">
+                            <IconUpload className="w-4 h-4 mr-1"/> **Upload Photo Instead**
                         </button>
                     </div>
                 );
@@ -974,7 +989,7 @@
                     )}
 
                     <h2 className="text-3xl font-bold text-gray-800 mb-4">Identify Plant</h2>
-                    <p className="text-gray-600 mb-6 text-center">Use the camera or upload a photo to get started.</p>
+                    <p className="text-gray-600 mb-6 text-center">Use the **Upload Photo from Gallery** option if your camera is blocked.</p>
                     
                     {/* Image/Video Preview Area */}
                     <div className={`w-full h-80 flex items-center justify-center rounded-2xl shadow-xl border-4 transition duration-300 overflow-hidden relative 
@@ -993,7 +1008,7 @@
 
                     {error && (
                         <div className="mt-4 p-3 bg-red-100 border border-red-400 text-red-700 rounded-lg w-full text-sm">
-                            Error: {error}
+                            **Error:** {error}
                         </div>
                     )}
                     
