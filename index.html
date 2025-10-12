@@ -16,8 +16,6 @@
     <!-- Babel is needed to compile JSX in the browser for this single-file setup -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     
-    <!-- REMOVED: Lucide Icons UMD Bundle to fix forwardRef error. Icons are now defined as inline SVGs below. -->
-
     <!-- Firebase SDK Imports -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
@@ -108,16 +106,24 @@
         ::-webkit-scrollbar-thumb:hover {
             background: #6ee7b7;
         }
+        .loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(255, 255, 255, 0.8);
+            z-index: 50;
+        }
     </style>
 </head>
 <body class="bg-gray-50 font-sans antialiased">
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, createContext, useContext, useMemo, useCallback } = React;
+        const { useState, useEffect, createContext, useContext, useMemo, useCallback, useRef } = React;
         
-        // --- Icon Fix: Using Inline SVGs to avoid UMD/forwardRef issues ---
-        
+        // --- Icon Definitions (Inline SVGs) ---
         // Base Icon Component for simplicity
         const BaseIcon = ({ children, className = "w-6 h-6", color = "currentColor" }) => (
             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
@@ -143,6 +149,14 @@
             <BaseIcon {...props}>
                 <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z" />
                 <circle cx="12" cy="13" r="3" />
+            </BaseIcon>
+        );
+
+        const IconUpload = (props) => (
+            <BaseIcon {...props}>
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1="12" x2="12" y1="3" y2="15" />
             </BaseIcon>
         );
 
@@ -235,7 +249,7 @@
                 <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
             </BaseIcon>
         );
-        // --- End Icon Fix ---
+        // --- End Icon Definitions ---
 
         // --- Global State and Constants ---
         const PAGES = {
@@ -256,9 +270,10 @@
 
         // --- Consolidated App Provider ---
 
-        // Renaming FirebaseProvider to AppProvider and integrating UI state
         const AppProvider = ({ children }) => {
             const [currentPage, setCurrentPage] = useState(PAGES.SPLASH); // UI State
+            // NEW STATE: To hold data for the plant currently being viewed (e.g., after identification or clicking in library)
+            const [selectedPlant, setSelectedPlant] = useState(null); 
             const [db, setDb] = useState(null); // Firebase State
             const [auth, setAuth] = useState(null);
             const [userId, setUserId] = useState(null);
@@ -303,6 +318,8 @@
                 // UI State
                 currentPage,
                 setCurrentPage,
+                selectedPlant,
+                setSelectedPlant, // EXPOSED SETTER
                 // Firebase/Data State
                 db,
                 auth,
@@ -311,7 +328,7 @@
                 appId: window.firebase ? window.firebase.appId : 'default-app-id',
                 firestore: window.firebase ? window.firebase.firestore : null,
                 serverTimestamp: window.firebase ? window.firebase.serverTimestamp : null
-            }), [currentPage, setCurrentPage, db, auth, userId, isAuthReady]);
+            }), [currentPage, setCurrentPage, selectedPlant, db, auth, userId, isAuthReady]);
 
             return (
                 <AppContext.Provider value={value}>
@@ -321,6 +338,56 @@
         };
 
         // --- Data Fetching Hooks ---
+
+        const getPath = (db, appId, userId, collectionName, docId) => {
+            const firestore = window.firebase.firestore;
+            if (!firestore) return null;
+            const path = `artifacts/${appId}/users/${userId}/${collectionName}`;
+            return docId ? firestore.doc(db, path, docId) : firestore.collection(db, path);
+        };
+
+        const usePlantActions = () => {
+            const { db, userId, appId, firestore, serverTimestamp, setSelectedPlant } = useAppState();
+
+            // Function to add a plant and then set it as the selected plant for viewing
+            const addPlant = useCallback(async (data) => {
+                if (!db || !userId || !firestore) {
+                    console.error("Firestore not initialized.");
+                    return null;
+                }
+                try {
+                    const collectionRef = getPath(db, appId, userId, 'plants');
+                    if (!collectionRef) return null;
+                    const newPlant = {
+                        ...data,
+                        createdAt: serverTimestamp(),
+                        updatedAt: serverTimestamp(),
+                    };
+                    const docRef = await firestore.addDoc(collectionRef, newPlant);
+                    
+                    // Set the newly created plant as selected
+                    setSelectedPlant({ ...newPlant, id: docRef.id, createdAt: new Date() });
+                    return { ...newPlant, id: docRef.id };
+                } catch (e) {
+                    console.error("Error adding document: ", e);
+                    // Add UI error feedback here
+                    return null;
+                }
+            }, [db, userId, appId, firestore, serverTimestamp, setSelectedPlant]);
+
+            const deletePlant = useCallback(async (plantId) => {
+                if (!db || !userId || !firestore) return;
+                try {
+                    const docRef = getPath(db, appId, userId, 'plants', plantId);
+                    if (!docRef) return;
+                    await firestore.deleteDoc(docRef);
+                } catch (e) {
+                    console.error("Error deleting document: ", e);
+                }
+            }, [db, userId, appId, firestore]);
+            
+            return { addPlant, deletePlant };
+        };
 
         const useUserPlants = () => {
             const { db, userId, isAuthReady, appId, firestore } = useAppState();
@@ -335,7 +402,8 @@
                 }
 
                 // Path: /artifacts/{appId}/users/{userId}/plants
-                const userPlantsCollectionRef = firestore.collection(db, `artifacts/${appId}/users/${userId}/plants`);
+                const userPlantsCollectionRef = getPath(db, appId, userId, 'plants');
+                if (!userPlantsCollectionRef) return;
                 const userPlantsQuery = firestore.query(userPlantsCollectionRef);
 
                 const unsubscribe = firestore.onSnapshot(userPlantsQuery, 
@@ -362,56 +430,35 @@
             return { plants, loading, error };
         };
 
+
         // --- Utility Functions ---
 
-        const getPath = (db, appId, userId, collectionName, docId) => {
-            const firestore = window.firebase.firestore;
-            if (!firestore) return null;
-            const path = `artifacts/${appId}/users/${userId}/${collectionName}`;
-            return docId ? firestore.doc(db, path, docId) : firestore.collection(db, path);
-        };
-
-        const usePlantActions = () => {
-            const { db, userId, appId, firestore, serverTimestamp } = useAppState();
-
-            const addPlant = useCallback(async (data) => {
-                if (!db || !userId || !firestore) return;
+        // Function to handle exponential backoff for API calls
+        const fetchWithRetry = async (url, options, maxRetries = 5) => {
+            for (let i = 0; i < maxRetries; i++) {
                 try {
-                    const collectionRef = getPath(db, appId, userId, 'plants');
-                    if (!collectionRef) return;
-                    const newPlant = {
-                        ...data,
-                        createdAt: serverTimestamp(),
-                        updatedAt: serverTimestamp(),
-                    };
-                    await firestore.addDoc(collectionRef, newPlant);
-                } catch (e) {
-                    console.error("Error adding document: ", e);
-                    // Add UI error feedback here
+                    const response = await fetch(url, options);
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response;
+                } catch (error) {
+                    if (i === maxRetries - 1) {
+                        throw error;
+                    }
+                    // Exponential backoff
+                    const delay = Math.pow(2, i) * 1000 + Math.random() * 1000;
+                    await new Promise(resolve => setTimeout(resolve, delay));
                 }
-            }, [db, userId, appId, firestore, serverTimestamp]);
-
-            const deletePlant = useCallback(async (plantId) => {
-                if (!db || !userId || !firestore) return;
-                try {
-                    const docRef = getPath(db, appId, userId, 'plants', plantId);
-                    if (!docRef) return;
-                    await firestore.deleteDoc(docRef);
-                } catch (e) {
-                    console.error("Error deleting document: ", e);
-                    // Add UI error feedback here
-                }
-            }, [db, userId, appId, firestore]);
-            
-            return { addPlant, deletePlant };
+            }
         };
 
         // --- Components ---
 
-        const LoadingSpinner = () => (
-            <div className="flex justify-center items-center h-full min-h-64">
-                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-green-600"></div>
-                <p className="ml-4 text-gray-500">Loading...</p>
+        const LoadingSpinner = ({ message = "Loading..." }) => (
+            <div className="flex flex-col items-center justify-center h-full min-h-64 p-8">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-4 border-green-600"></div>
+                <p className="ml-4 text-gray-500 mt-4 font-medium">{message}</p>
             </div>
         );
 
@@ -448,13 +495,12 @@
         };
 
         const SplashPage = () => {
-            // FIX: setCurrentPage is now correctly retrieved from useAppState
             const { setCurrentPage } = useAppState(); 
             
             useEffect(() => {
                 const timer = setTimeout(() => {
                     setCurrentPage(PAGES.DISCLAIMER);
-                }, 3000); // 3 second splash screen
+                }, 3000); 
                 return () => clearTimeout(timer);
             }, [setCurrentPage]);
 
@@ -474,12 +520,12 @@
                 {
                     icon: IconShieldCheck,
                     title: "Identification Accuracy",
-                    description: "RootSage uses advanced AI, but identification is not 100% guaranteed. Always confirm with a local expert before ingesting or handling unknown plants, especially for medical or toxic concerns.",
+                    description: "RootSage uses advanced AI, but identification is not 100% guaranteed. Always confirm with a local expert before ingesting or handling unknown plants.",
                 },
                 {
                     icon: IconDroplet,
                     title: "Toxicity Disclaimer",
-                    description: "Identification is not a measure of toxicity. Many plants are toxic. Do not consume any part of an identified plant based solely on this app's results.",
+                    description: "Identification is not a measure of toxicity. Do not consume any part of an identified plant based solely on this app's results.",
                 },
                 {
                     icon: IconSun,
@@ -523,7 +569,7 @@
         };
 
         const HomePage = () => {
-            const { setCurrentPage } = useAppState();
+            const { setCurrentPage, setSelectedPlant } = useAppState();
             const { plants, loading } = useUserPlants();
             
             // Sort plants by createdAt descending, then show 3 most recent
@@ -540,6 +586,11 @@
                 "Check for pests like spider mites on the undersides of leaves."
             ];
 
+            const handleViewPlant = (plant) => {
+                setSelectedPlant(plant);
+                setCurrentPage(PAGES.DETAIL);
+            };
+
             return (
                 <div className="p-4 space-y-6 max-w-lg mx-auto">
                     
@@ -548,7 +599,7 @@
                         <h2 className="text-2xl font-bold text-gray-800 mb-4 flex items-center">
                             <IconCamera className="w-6 h-6 mr-2 text-green-600"/> Quick Identify
                         </h2>
-                        <p className="text-gray-600 mb-4">Ready to find out what that plant is? Tap below to open your camera.</p>
+                        <p className="text-gray-600 mb-4">Ready to find out what that plant is? Tap below to open your camera/uploader.</p>
                         <button
                             onClick={() => setCurrentPage(PAGES.CAMERA)}
                             className="w-full bg-green-600 text-white py-3 rounded-xl font-bold text-lg hover:bg-green-700 transition duration-150 flex items-center justify-center shadow-md shadow-green-300"
@@ -564,7 +615,7 @@
                             <IconBookOpen className="w-6 h-6 mr-2 text-gray-500"/> Recent Identifications
                         </h2>
                         
-                        {loading && <LoadingSpinner />}
+                        {loading && <LoadingSpinner message="Loading your library..."/>}
 
                         {!loading && sortedPlants.length === 0 && (
                             <div className="text-center py-4 text-gray-500">
@@ -579,7 +630,7 @@
                                     <div 
                                         key={plant.id} 
                                         className="flex items-center p-3 bg-gray-50 rounded-xl hover:bg-gray-100 transition cursor-pointer"
-                                        onClick={() => setCurrentPage(PAGES.DETAIL)} // Placeholder action
+                                        onClick={() => handleViewPlant(plant)} 
                                     >
                                         <div className="w-10 h-10 bg-green-200 rounded-full flex items-center justify-center flex-shrink-0 overflow-hidden">
                                             {/* Placeholder for image */}
@@ -617,6 +668,178 @@
             );
         };
 
+        const CameraPage = () => {
+            const { setCurrentPage, setSelectedPlant } = useAppState();
+            const { addPlant } = usePlantActions();
+            const fileInputRef = useRef(null);
+
+            const [imagePreviewUrl, setImagePreviewUrl] = useState(null);
+            const [base64Image, setBase64Image] = useState(null);
+            const [mimeType, setMimeType] = useState(null);
+            const [isLoading, setIsLoading] = useState(false);
+            const [error, setError] = useState(null);
+
+            const handleImageSelect = (event) => {
+                const file = event.target.files[0];
+                if (file) {
+                    setError(null);
+                    setMimeType(file.type);
+                    const reader = new FileReader();
+                    
+                    reader.onloadend = () => {
+                        // Base64 string includes the data URL prefix, e.g., "data:image/jpeg;base64,..."
+                        const base64Data = reader.result.split(',')[1];
+                        setImagePreviewUrl(reader.result);
+                        setBase64Image(base64Data);
+                    };
+                    reader.readAsDataURL(file);
+                }
+            };
+            
+            const identifyPlant = async () => {
+                if (!base64Image || !mimeType) {
+                    setError("Please select a photo of a plant first.");
+                    return;
+                }
+
+                setIsLoading(true);
+                setError(null);
+
+                const apiKey = ""; 
+                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+                
+                const systemPrompt = `You are RootSage, an expert botanical identification and care assistant. Analyze the image and provide the plant's common name, scientific name, and relevant care information. Respond ONLY with a single JSON object that strictly follows the provided schema. Do not add any extra text, markdown, or commentary outside the JSON.`;
+                const userQuery = `Identify the plant in this image. Provide the common name, scientific name, a percentage confidence score (between 70% and 99%), whether it is considered toxic to common pets (dogs/cats), and three specific care tips. Also, provide a brief, positive stewardship description (10-15 words).`;
+
+                const payload = {
+                    contents: [{
+                        parts: [
+                            { text: userQuery },
+                            { inlineData: { mimeType: mimeType, data: base64Image } }
+                        ]
+                    }],
+                    systemInstruction: { parts: [{ text: systemPrompt }] },
+                    generationConfig: {
+                        responseMimeType: "application/json",
+                        responseSchema: {
+                            type: "OBJECT",
+                            properties: {
+                                name: { type: "STRING", description: "Common name of the plant (e.g., Fiddle Leaf Fig)." },
+                                scientificName: { type: "STRING", description: "Scientific name of the plant (e.g., Ficus lyrata)." },
+                                confidence: { type: "STRING", description: "Confidence percentage string (e.g., '95%')." },
+                                isToxic: { type: "BOOLEAN", description: "True if toxic to common pets (dogs/cats), false otherwise." },
+                                toxicity: { type: "STRING", description: "A brief explanation of toxicity." },
+                                careTips: { type: "ARRAY", items: { type: "STRING" }, description: "Three essential care tips." },
+                                stewardshipDescription: { type: "STRING", description: "A short, positive description of the plant's value." },
+                                imageURL: { type: "STRING", description: "Use the placeholder URL: https://placehold.co/400x300/a7f3d0/065f46?text=Identified+Plant" }
+                            },
+                            required: ["name", "scientificName", "confidence", "isToxic", "toxicity", "careTips", "stewardshipDescription", "imageURL"]
+                        }
+                    }
+                };
+
+                try {
+                    const response = await fetchWithRetry(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    const result = await response.json();
+                    const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+
+                    if (text) {
+                        const identifiedData = JSON.parse(text);
+                        
+                        // 1. Save the identified plant to Firestore
+                        const savedPlant = await addPlant(identifiedData);
+                        
+                        // 2. Navigate to the detail page (addPlant already set selectedPlant)
+                        if (savedPlant) {
+                            setCurrentPage(PAGES.DETAIL);
+                        } else {
+                             setError("Identification successful, but failed to save to library.");
+                        }
+                    } else {
+                        setError("Identification failed. Could not parse response from AI.");
+                        console.error("AI Response Error:", result);
+                    }
+                } catch (e) {
+                    setError("API call failed. Please check connection or try again later.");
+                    console.error("Fetch/API Error:", e);
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+            
+            // Allow the user to click the preview image to re-open the file selector
+            const openFileSelector = () => {
+                fileInputRef.current?.click();
+            };
+
+
+            return (
+                <div className="p-4 flex flex-col items-center max-w-lg mx-auto h-full relative">
+                    {isLoading && (
+                        <div className="loading-overlay flex items-center justify-center rounded-2xl">
+                            <LoadingSpinner message="Analyzing image... please wait."/>
+                        </div>
+                    )}
+
+                    <h2 className="text-3xl font-bold text-gray-800 mb-4">Identify Plant</h2>
+                    <p className="text-gray-600 mb-6 text-center">Take or upload a clear photo of the leaf or flower.</p>
+                    
+                    <input
+                        type="file"
+                        accept="image/*"
+                        capture="environment" /* Suggests using the device camera first */
+                        onChange={handleImageSelect}
+                        ref={fileInputRef}
+                        className="hidden"
+                    />
+
+                    {/* Image Preview / Upload Area */}
+                    <div 
+                        onClick={openFileSelector}
+                        className={`w-full h-80 flex items-center justify-center rounded-2xl shadow-xl transition duration-300 cursor-pointer 
+                            ${imagePreviewUrl ? 'p-0 border-4 border-green-300' : 'bg-green-50 border-2 border-dashed border-green-300 hover:bg-green-100 p-8'}`}
+                    >
+                        {imagePreviewUrl ? (
+                            <img src={imagePreviewUrl} alt="Plant Preview" className="w-full h-full object-cover rounded-xl" />
+                        ) : (
+                            <div className="text-center text-green-600">
+                                <IconUpload className="w-10 h-10 mx-auto mb-2"/>
+                                <p className="font-semibold">Tap to Upload Photo</p>
+                                <p className="text-sm text-green-500 mt-1">or take a picture</p>
+                            </div>
+                        )}
+                    </div>
+
+                    {error && (
+                        <div className="mt-4 p-3 bg-red-100 border border-red-400 text-red-700 rounded-lg w-full text-sm">
+                            Error: {error}
+                        </div>
+                    )}
+
+                    {/* Identify Button */}
+                    <div className="w-full mt-6">
+                        <button
+                            onClick={identifyPlant}
+                            disabled={!base64Image || isLoading}
+                            className={`w-full py-3 rounded-xl font-bold text-lg transition duration-150 flex items-center justify-center shadow-lg ${
+                                base64Image && !isLoading
+                                    ? 'bg-green-600 text-white hover:bg-green-700 shadow-green-400/50'
+                                    : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                            }`}
+                        >
+                            <IconZap className="w-5 h-5 mr-2" />
+                            {isLoading ? 'Identifying...' : 'Identify Plant'}
+                        </button>
+                    </div>
+                </div>
+            );
+        };
+
 
         const PlaceholderPage = ({ title, icon: Icon, description }) => {
             const { setCurrentPage } = useAppState();
@@ -626,119 +849,82 @@
                     <Icon className="w-16 h-16 text-green-500 mb-4" />
                     <h2 className="text-3xl font-bold text-gray-800 mb-3">{title}</h2>
                     <p className="text-gray-600 mb-8">{description}</p>
-                    {title !== "Camera" && (
-                        <button
-                            onClick={() => setCurrentPage(PAGES.HOME)}
-                            className="bg-green-600 text-white py-2 px-6 rounded-xl font-semibold hover:bg-green-700 transition duration-150 shadow-md"
-                        >
-                            Go to Home
-                        </button>
-                    )}
-                    {title === "Camera" && (
-                        <div className="w-full">
-                            <div className="h-64 bg-gray-200 rounded-2xl flex items-center justify-center mb-6">
-                                <span className="text-gray-500">Camera Feed Placeholder</span>
-                            </div>
-                            <button
-                                onClick={() => {
-                                    // Mock identification result and navigate to detail
-                                    console.log("Mocking plant identification...");
-                                    const mockPlant = {
-                                        name: "Monstera Deliciosa",
-                                        confidence: "98%",
-                                        isToxic: false,
-                                        care: "Water deeply, bright indirect light."
-                                    };
-                                    // In a real app, this would be an API call, and we'd save/navigate.
-                                    setCurrentPage(PAGES.DETAIL);
-                                }}
-                                className="w-full bg-green-600 text-white py-3 rounded-xl font-bold text-lg hover:bg-green-700 transition duration-150 flex items-center justify-center shadow-md shadow-green-300"
-                            >
-                                <IconZap className="w-5 h-5 mr-2" />
-                                Identify Plant
-                            </button>
-                        </div>
-                    )}
+                    <button
+                        onClick={() => setCurrentPage(PAGES.HOME)}
+                        className="bg-green-600 text-white py-2 px-6 rounded-xl font-semibold hover:bg-green-700 transition duration-150 shadow-md"
+                    >
+                        Go to Home
+                    </button>
                 </div>
             );
         };
 
         const PlantDetailPage = () => {
-            const { setCurrentPage } = useAppState();
+            const { setCurrentPage, selectedPlant, setSelectedPlant } = useAppState();
             const { deletePlant } = usePlantActions();
 
-            // Mock Data for demonstration
-            const plant = {
-                id: 'mock-123',
-                name: "Monstera Deliciosa",
-                scientificName: "Swiss Cheese Plant",
-                confidence: "98%",
-                isToxic: false,
-                imageURL: "https://placehold.co/400x300/a7f3d0/065f46?text=Monstera+Mock",
-                careTips: [
-                    "Bright, indirect sunlight is best.",
-                    "Water when the top 2 inches of soil are dry.",
-                    "Wipe leaves occasionally to promote photosynthesis.",
-                    "Fertilize once a month during growing season."
-                ],
-                toxicity: "Mildly toxic to pets and humans if ingested.",
-                lastIdentified: "October 10, 2025",
-                stewardship: {
-                    level: 3, // 1 to 5
-                    description: "High air purification and aesthetic value."
+            // Use the dynamic selectedPlant from context
+            const plant = selectedPlant; 
+
+            if (!plant) {
+                // Handle case where we navigate here without a selected plant
+                useEffect(() => {
+                    setCurrentPage(PAGES.HOME);
+                }, [setCurrentPage]);
+                return <LoadingSpinner message="Redirecting to home..." />;
+            }
+            
+            // Parse care tips if they came as a JSON array (should be array of strings)
+            const careTips = Array.isArray(plant.careTips) ? plant.careTips : [];
+
+            const handleDelete = async () => {
+                // In a real app, you'd show a modal/dialog for confirmation:
+                // if (await showConfirmationModal("Are you sure?")) { ... }
+                
+                try {
+                    await deletePlant(plant.id); 
+                    setSelectedPlant(null);
+                    setCurrentPage(PAGES.LIBRARY);
+                } catch (error) {
+                    console.error("Failed to delete plant:", error);
+                    // Add UI error feedback
                 }
             };
 
-            const handleDelete = async () => {
-                // IMPORTANT: Since we cannot use confirm(), we'll use a console log placeholder for now.
-                console.log("Confirming deletion. Implement custom modal UI here.");
-                // In a real app, you'd show a modal/dialog for confirmation:
-                // if (await showConfirmationModal("Are you sure?")) {
-                //     await deletePlant(plant.id); 
-                //     setCurrentPage(PAGES.LIBRARY);
-                // }
-                
-                // For demonstration, mock a successful delete after a delay
-                setTimeout(() => {
-                    setCurrentPage(PAGES.LIBRARY);
-                }, 100);
-            };
-
-            const StewardshipIcon = IconHeart; // Placeholder logic
+            const StewardshipIcon = IconHeart; 
 
             return (
                 <div className="p-4 max-w-lg mx-auto">
                     <div className="bg-white rounded-2xl shadow-xl overflow-hidden mb-4">
                         {/* Image/Header */}
                         <img 
-                            src={plant.imageURL} 
+                            // Use the placeholder URL provided by the AI response
+                            src={plant.imageURL || "https://placehold.co/400x300/e0f2f1/065f46?text=Identified+Plant"} 
                             alt={plant.name} 
                             className="w-full h-64 object-cover"
                             onError={(e) => { e.target.onerror = null; e.target.src = "https://placehold.co/400x300/e0f2f1/065f46?text=Image+Not+Found"; }}
                         />
                         
                         <div className="p-6">
-                            <h1 className="text-3xl font-extrabold text-green-700">{plant.name}</h1>
-                            <p className="text-lg italic text-gray-500 mb-4">{plant.scientificName}</p>
+                            <h1 className="text-3xl font-extrabold text-green-700">{plant.name || 'Unidentified'}</h1>
+                            <p className="text-lg italic text-gray-500 mb-4">{plant.scientificName || 'Unknown Species'}</p>
 
                             {/* Key Stats */}
                             <div className="flex justify-between items-center border-t border-b py-3 mb-6">
                                 <div className="text-center">
                                     <p className="text-xs font-medium text-gray-500">CONFIDENCE</p>
-                                    <p className="text-xl font-bold text-green-600">{plant.confidence}</p>
+                                    <p className="text-xl font-bold text-green-600">{plant.confidence || 'N/A'}</p>
                                 </div>
                                 <div className="text-center">
-                                    <p className="text-xs font-medium text-gray-500">TOXICITY</p>
+                                    <p className="text-xs font-medium text-gray-500">TOXIC</p>
                                     <p className={`text-xl font-bold ${plant.isToxic ? 'text-red-500' : 'text-green-500'}`}>
-                                        {plant.isToxic ? 'Yes' : 'No'}
+                                        {plant.isToxic ? 'YES' : 'NO'}
                                     </p>
                                 </div>
                                 <div className="text-center">
-                                    <p className="text-xs font-medium text-gray-500">STEWARDSHIP</p>
-                                    <div className="flex justify-center">
-                                        {[...Array(plant.stewardship.level)].map((_, i) => (
-                                            <StewardshipIcon key={i} className="w-5 h-5 text-green-500 fill-green-500 mx-0.5" />
-                                        ))}
+                                    <p className="text-xs font-medium text-gray-500">IDENTIFIED</p>
+                                    <div className="text-sm font-semibold text-gray-700">
+                                        {new Date(plant.createdAt).toLocaleDateString()}
                                     </div>
                                 </div>
                             </div>
@@ -747,18 +933,30 @@
                             <h2 className="text-2xl font-bold text-gray-800 mb-3 flex items-center">
                                 <IconCheck className="w-5 h-5 mr-2 text-green-600"/> Care Tips
                             </h2>
-                            <ul className="space-y-2 mb-6 list-disc list-inside text-gray-600">
-                                {plant.careTips.map((tip, index) => (
-                                    <li key={index} className="text-sm">{tip}</li>
-                                ))}
-                            </ul>
+                            {careTips.length > 0 ? (
+                                <ul className="space-y-2 mb-6 list-disc list-inside text-gray-600">
+                                    {careTips.map((tip, index) => (
+                                        <li key={index} className="text-sm">{tip}</li>
+                                    ))}
+                                </ul>
+                            ) : (
+                                <p className="text-gray-500 mb-6 text-sm">No specific care tips found for this identification.</p>
+                            )}
+
+                            {/* Stewardship Info */}
+                            <h2 className="text-2xl font-bold text-gray-800 mb-3 flex items-center">
+                                <StewardshipIcon className="w-5 h-5 mr-2 text-yellow-600"/> Stewardship
+                            </h2>
+                             <div className="p-4 rounded-xl bg-yellow-50 text-yellow-800 border border-yellow-200 text-sm mb-6">
+                                {plant.stewardshipDescription || "No stewardship information available."}
+                            </div>
 
                             {/* Toxicity Info */}
                             <h2 className="text-2xl font-bold text-gray-800 mb-3 flex items-center">
-                                <IconDroplet className="w-5 h-5 mr-2 text-red-600"/> Safety
+                                <IconDroplet className="w-5 h-5 mr-2 text-red-600"/> Safety/Toxicity
                             </h2>
                             <div className={`p-4 rounded-xl text-sm ${plant.isToxic ? 'bg-red-50 text-red-800 border border-red-200' : 'bg-green-50 text-green-800 border border-green-200'}`}>
-                                {plant.toxicity}
+                                **Toxicity:** {plant.toxicity || 'Information not provided.'}
                             </div>
                         </div>
                     </div>
@@ -786,8 +984,13 @@
         // --- Main App Component ---
 
         const App = () => {
-            // FIX: currentPage and setCurrentPage are now managed by AppProvider
-            const { currentPage, setCurrentPage, isAuthReady, userId } = useAppState(); 
+            const { currentPage, setCurrentPage, isAuthReady, userId, setSelectedPlant } = useAppState(); 
+
+            // Function to set selected plant and navigate to detail
+            const viewPlantDetail = (plant) => {
+                setSelectedPlant(plant);
+                setCurrentPage(PAGES.DETAIL);
+            };
 
             const renderPage = () => {
                 switch (currentPage) {
@@ -796,13 +999,12 @@
                     case PAGES.DISCLAIMER:
                         return <DisclaimerPage />;
                     case PAGES.HOME:
-                        return <HomePage />;
+                        return <HomePage viewPlantDetail={viewPlantDetail} />;
                     case PAGES.CAMERA:
-                        return <PlaceholderPage title="Camera" icon={IconCamera} description="Use your camera to identify a new plant!" />;
+                        return <CameraPage />;
                     case PAGES.LIBRARY:
-                        return <PlaceholderPage title="My Library" icon={IconBookOpen} description="All your identified plants in one place. Your growing story starts here!" />;
+                        return <PlaceholderPage title="My Library" icon={IconBookOpen} description="All your identified plants in one place. This page will soon list all saved plants from Firestore!" />;
                     case PAGES.PROFILE:
-                        // Placeholder for a settings/user profile page
                         return <PlaceholderPage title={`User: ${userId}`} icon={IconSettings} description={`This is your unique user ID for persistence: ${userId.substring(0, 8)}...`} />;
                     case PAGES.STEWARDSHIP:
                         return <PlaceholderPage title="Plant Stewardship" icon={IconHeart} description="Learn how to care for plants and contribute to a healthier planet." />;
@@ -814,7 +1016,7 @@
             };
 
             if (!isAuthReady) {
-                return <LoadingSpinner />;
+                return <LoadingSpinner message="Authenticating and preparing app..." />;
             }
             
             return (
@@ -839,15 +1041,15 @@
                             {renderPage()}
                         </main>
 
-                        {currentPage !== PAGES.SPLASH && currentPage !== PAGES.DISCLAIMER && <NavBar currentPage={currentPage} setCurrentPage={setCurrentPage} />}
+                        {currentPage !== PAGES.SPLASH && currentPage !== PAGES.DISCLAIMER && currentPage !== PAGES.CAMERA && <NavBar currentPage={currentPage} setCurrentPage={setCurrentPage} />}
                     </div>
                 </div>
             );
         };
 
-        // FIX: AppProvider now wraps App and manages the central state.
         ReactDOM.createRoot(document.getElementById('root')).render(<AppProvider><App /></AppProvider>);
 
     </script>
 </body>
 </html>
+
