@@ -115,6 +115,19 @@
             background: rgba(255, 255, 255, 0.8);
             z-index: 50;
         }
+        /* Style for the video element to fill the container and look good */
+        .camera-video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover; /* Ensures video fills the area without distortion */
+            transform: scaleX(-1); /* Flips the video horizontally for a "selfie" effect, but this can be removed for the 'environment' camera */
+        }
+        /* Style for the canvas used to capture the frame (hidden) */
+        .capture-canvas {
+            position: absolute;
+            top: -9999px;
+            left: -9999px;
+        }
     </style>
 </head>
 <body class="bg-gray-50 font-sans antialiased">
@@ -247,6 +260,12 @@
         const IconZap = (props) => (
             <BaseIcon {...props}>
                 <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+            </BaseIcon>
+        );
+
+        const IconCircle = (props) => (
+            <BaseIcon {...props}>
+                <circle cx="12" cy="12" r="10" />
             </BaseIcon>
         );
         // --- End Icon Definitions ---
@@ -669,25 +688,115 @@
         };
 
         const CameraPage = () => {
-            const { setCurrentPage, setSelectedPlant } = useAppState();
+            const { setCurrentPage } = useAppState();
             const { addPlant } = usePlantActions();
 
+            // Refs for DOM elements
+            const videoRef = useRef(null);
+            const canvasRef = useRef(null);
+            const fileInputRef = useRef(null); // Keep for "Upload from Library"
+
+            // State for camera management
+            const [stream, setStream] = useState(null);
+            const [isCameraActive, setIsCameraActive] = useState(false);
+            const [permissionError, setPermissionError] = useState(null);
+
+            // State for image data and process
             const [imagePreviewUrl, setImagePreviewUrl] = useState(null);
             const [base64Image, setBase64Image] = useState(null);
             const [mimeType, setMimeType] = useState(null);
             const [isLoading, setIsLoading] = useState(false);
             const [error, setError] = useState(null);
-            
-            // --- Refs for direct input interaction ---
-            const cameraInputRef = useRef(null);
-            const fileInputRef = useRef(null);
-            // -----------------------------------------
 
-            const handleImageSelect = (event) => {
+            // 1. Setup Camera Stream
+            useEffect(() => {
+                // Only try to start the camera if it's the active page and not already streaming
+                if (videoRef.current && !stream && !isCameraActive && !imagePreviewUrl) {
+                    startCamera();
+                }
+                
+                // Cleanup function
+                return () => {
+                    if (stream) {
+                        stream.getTracks().forEach(track => track.stop());
+                        setStream(null);
+                        setIsCameraActive(false);
+                    }
+                };
+            }, [videoRef.current]); // Re-run if videoRef is set/unset
+
+            const startCamera = async () => {
+                setPermissionError(null);
+                try {
+                    // Request the environment-facing (back) camera
+                    const constraints = { video: { facingMode: { exact: "environment" } } };
+                    const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+                    
+                    // Attach stream to video element
+                    if (videoRef.current) {
+                        videoRef.current.srcObject = newStream;
+                        videoRef.current.play();
+                    }
+                    
+                    setStream(newStream);
+                    setIsCameraActive(true);
+                } catch (err) {
+                    console.error("Error accessing camera: ", err);
+                    // This error most often happens if permission is denied or no camera is found
+                    setPermissionError("Camera access denied or device does not support `environment` camera.");
+                    setIsCameraActive(false);
+                }
+            };
+            
+            // 2. Image Capture from Live Stream
+            const captureImage = () => {
+                if (!videoRef.current || !canvasRef.current || !stream) {
+                    setError("Camera not ready. Please wait or check permissions.");
+                    return;
+                }
+
+                // Stop video tracks (pauses the camera)
+                stream.getTracks().forEach(track => track.stop());
+                setStream(null);
+                setIsCameraActive(false);
+
+
+                const video = videoRef.current;
+                const canvas = canvasRef.current;
+                
+                // Set canvas dimensions to match video stream
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                
+                const ctx = canvas.getContext('2d');
+                // Draw the current video frame onto the canvas
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+                // Convert canvas to base64 image data (JPEG format)
+                const dataURL = canvas.toDataURL('image/jpeg', 0.9);
+                
+                // Extract base64 and mime type
+                const base64Data = dataURL.split(',')[1];
+                const type = 'image/jpeg';
+                
+                setImagePreviewUrl(dataURL);
+                setBase64Image(base64Data);
+                setMimeType(type);
+                setError(null);
+            };
+
+            // 3. Image Select from File (Fallback for Gallery Upload)
+            const handleFileSelect = (event) => {
                 const file = event.target.files[0];
                 if (file) {
+                    // Stop camera if it was running
+                    if(stream) {
+                        stream.getTracks().forEach(track => track.stop());
+                        setStream(null);
+                        setIsCameraActive(false);
+                    }
+
                     setError(null);
-                    // Check file size (e.g., limit to 5MB for API call)
                     if (file.size > 5 * 1024 * 1024) {
                         setError("File is too large (max 5MB).");
                         return;
@@ -697,33 +806,35 @@
                     const reader = new FileReader();
                     
                     reader.onloadend = () => {
-                        // Base64 string includes the data URL prefix, e.g., "data:image/jpeg;base64,..."
-                        const base64Data = reader.result.split(',')[1];
-                        setImagePreviewUrl(reader.result);
+                        const dataURL = reader.result;
+                        const base64Data = dataURL.split(',')[1];
+
+                        setImagePreviewUrl(dataURL);
                         setBase64Image(base64Data);
+                        setMimeType(file.type);
                     };
                     reader.readAsDataURL(file);
                 }
             };
             
-            // --- Handlers for button clicks to trigger hidden inputs ---
-            const handleCameraClick = () => {
-                // Important: clear the value to ensure onChange fires even if the same image is chosen
-                if (cameraInputRef.current) {
-                    cameraInputRef.current.value = null; 
-                    cameraInputRef.current.click(); // Programmatically click the hidden input
-                }
+            // 4. Reset/Clear Photo
+            const handleClearPhoto = () => {
+                setImagePreviewUrl(null);
+                setBase64Image(null);
+                setMimeType(null);
+                setError(null);
+                startCamera(); // Restart camera immediately
             };
 
+            // 5. Trigger File Input for Gallery
             const handleFileClick = () => {
                 if (fileInputRef.current) {
-                    fileInputRef.current.value = null;
-                    fileInputRef.current.click(); // Programmatically click the hidden input
+                    fileInputRef.current.value = null; // Important for onChange to fire on same file re-selection
+                    fileInputRef.current.click(); 
                 }
             };
-            // -----------------------------------------------------------
 
-
+            // 6. Gemini API Call
             const identifyPlant = async () => {
                 if (!base64Image || !mimeType) {
                     setError("Please select a photo of a plant first."); 
@@ -785,10 +896,6 @@
                         // 2. Navigate to the detail page (addPlant already set selectedPlant)
                         if (savedPlant) {
                             setCurrentPage(PAGES.DETAIL);
-                            // Clear image state after successful identification
-                            setImagePreviewUrl(null);
-                            setBase64Image(null);
-                            setMimeType(null);
                         } else {
                              setError("Identification successful, but failed to save to library.");
                         }
@@ -801,11 +908,54 @@
                     console.error("Fetch/API Error:", e);
                 } finally {
                     setIsLoading(false);
+                    // Reset to initial state and restart camera when done
+                    setImagePreviewUrl(null);
+                    setBase64Image(null);
+                    setMimeType(null);
+                    startCamera();
                 }
             };
             
+            // --- Render Logic ---
+            
+            // Decide what to show in the main view area
+            let mainContent;
+
+            if (imagePreviewUrl) {
+                // Show the static image preview after capture or file upload
+                mainContent = (
+                    <img src={imagePreviewUrl} alt="Plant Preview" className="w-full h-full object-contain bg-gray-100" />
+                );
+            } else if (permissionError) {
+                // Show permission error message
+                mainContent = (
+                    <div className="text-center text-red-500 p-4">
+                        <IconX className="w-10 h-10 mx-auto mb-2"/>
+                        <p className="font-semibold text-lg">Camera Unavailable</p>
+                        <p className="text-sm mt-1">{permissionError}</p>
+                        <button onClick={startCamera} className="mt-4 text-green-600 font-semibold">
+                            Try Requesting Access Again
+                        </button>
+                    </div>
+                );
+            } else if (isCameraActive) {
+                 // Show the live video stream
+                mainContent = (
+                    <>
+                        <video ref={videoRef} className="camera-video" playsInline autoPlay muted />
+                        {/* Hidden canvas for image capture */}
+                        <canvas ref={canvasRef} className="capture-canvas" />
+                    </>
+                );
+            } else {
+                // Initial loading state or waiting for camera stream
+                mainContent = <LoadingSpinner message="Requesting camera access..." />;
+            }
+
+
             return (
                 <div className="p-4 flex flex-col items-center max-w-lg mx-auto h-full relative">
+                    
                     {isLoading && (
                         <div className="loading-overlay flex items-center justify-center rounded-2xl">
                             <LoadingSpinner message="Analyzing image... please wait."/>
@@ -813,95 +963,95 @@
                     )}
 
                     <h2 className="text-3xl font-bold text-gray-800 mb-4">Identify Plant</h2>
-                    <p className="text-gray-600 mb-6 text-center">Take a clear photo or upload an image of the plant you want to identify.</p>
+                    <p className="text-gray-600 mb-6 text-center">Use the camera or upload a photo to get started.</p>
                     
-                    {/* HIDDEN FILE INPUTS (Now using refs) */}
+                    {/* Image/Video Preview Area */}
+                    <div className={`w-full h-80 flex items-center justify-center rounded-2xl shadow-xl border-4 transition duration-300 overflow-hidden relative 
+                            ${imagePreviewUrl ? 'p-0 border-green-300' : 'bg-gray-100 border-gray-200 p-0'}`}>
+                        {mainContent}
+                    </div>
                     
-                    {/* 1. Camera Input */}
+                    {/* HIDDEN FILE INPUT (Used ONLY for Gallery Upload) */}
                     <input
                         type="file"
-                        ref={cameraInputRef} /* Using ref for direct manipulation */
+                        ref={fileInputRef} 
                         accept="image/*"
-                        capture="environment" /* Forces camera to open immediately */
-                        onChange={handleImageSelect}
-                        className="hidden"
-                    />
-                     {/* 2. File/Gallery Input */}
-                    <input
-                        type="file"
-                        ref={fileInputRef} /* Using ref for direct manipulation */
-                        accept="image/*"
-                        onChange={handleImageSelect}
+                        onChange={handleFileSelect}
                         className="hidden"
                     />
 
-                    {/* Image Preview Area */}
-                    <div className={`w-full h-80 flex items-center justify-center rounded-2xl shadow-xl border-4 transition duration-300 overflow-hidden 
-                            ${imagePreviewUrl ? 'p-0 border-green-300' : 'bg-gray-100 border-gray-200 p-8'}`}>
-                        {imagePreviewUrl ? (
-                            <img src={imagePreviewUrl} alt="Plant Preview" className="w-full h-full object-cover" />
-                        ) : (
-                            <div className="text-center text-gray-500">
-                                <IconCamera className="w-10 h-10 mx-auto mb-2"/>
-                                <p className="font-semibold">No Photo Selected</p>
-                                <p className="text-sm mt-1">Use the buttons below to begin.</p>
-                            </div>
-                        )}
-                    </div>
-                    
                     {error && (
                         <div className="mt-4 p-3 bg-red-100 border border-red-400 text-red-700 rounded-lg w-full text-sm">
                             Error: {error}
                         </div>
                     )}
                     
-                    {/* Action Buttons: Visible if no image is selected or if an image is selected but we are not loading */}
+                    {/* Action Buttons */}
                     <div className="w-full mt-6 space-y-4">
                         {!imagePreviewUrl ? (
-                            <div className="flex gap-4">
-                                {/* Take New Photo Button - Now using a direct onClick handler to fire the ref's click() method */}
-                                <button
-                                    onClick={handleCameraClick}
-                                    className="flex-1 cursor-pointer w-full py-3 rounded-xl font-bold text-lg transition duration-150 flex items-center justify-center shadow-lg bg-green-600 text-white hover:bg-green-700 shadow-green-400/50"
-                                >
-                                    <IconCamera className="w-5 h-5 mr-2" />
-                                    Take New Photo
-                                </button>
-                                
-                                {/* Upload from Library Button - Now using a direct onClick handler to fire the ref's click() method */}
-                                <button
-                                    onClick={handleFileClick}
-                                    className="flex-1 cursor-pointer w-full py-3 rounded-xl font-bold text-lg transition duration-150 flex items-center justify-center shadow-md bg-gray-200 text-gray-700 hover:bg-gray-300"
-                                >
-                                    <IconUpload className="w-5 h-5 mr-2" />
-                                    Upload from Library
-                                </button>
+                            // Buttons when live camera is showing or preparing
+                            <div className="flex gap-4 items-center justify-center">
+                                {isCameraActive ? (
+                                    <>
+                                        {/* Capture Button - Only visible when camera stream is active */}
+                                        <button
+                                            onClick={captureImage}
+                                            className="flex-shrink-0 w-20 h-20 rounded-full border-4 border-white shadow-2xl bg-green-600 text-white hover:bg-green-700 transition duration-150 flex items-center justify-center"
+                                        >
+                                            <IconCircle className="w-16 h-16 fill-current"/>
+                                        </button>
+                                        <button
+                                            onClick={handleFileClick}
+                                            className="absolute right-0 p-3 m-3 rounded-full bg-gray-800 text-white/90 hover:bg-gray-700 shadow-lg"
+                                            style={{ bottom: 0, right: '5%'}}
+                                        >
+                                            <IconUpload className="w-6 h-6" />
+                                        </button>
+                                    </>
+                                ) : (
+                                    // Fallback buttons when camera is not active (due to error or user not having camera)
+                                    <>
+                                        <button
+                                            onClick={startCamera}
+                                            className="flex-1 w-full py-3 rounded-xl font-bold text-lg transition duration-150 flex items-center justify-center shadow-md bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
+                                            disabled={permissionError === null}
+                                        >
+                                            <IconCamera className="w-5 h-5 mr-2" />
+                                            Activate Camera
+                                        </button>
+                                        <button
+                                            onClick={handleFileClick}
+                                            className="flex-1 w-full py-3 rounded-xl font-bold text-lg transition duration-150 flex items-center justify-center shadow-md bg-gray-200 text-gray-700 hover:bg-gray-300"
+                                        >
+                                            <IconUpload className="w-5 h-5 mr-2" />
+                                            Upload Photo
+                                        </button>
+                                    </>
+                                )}
                             </div>
                         ) : (
-                            // Identify Plant Button: Visible once an image is selected
-                            <button
-                                onClick={identifyPlant}
-                                disabled={isLoading}
-                                className={`w-full py-3 rounded-xl font-bold text-lg transition duration-150 flex items-center justify-center shadow-lg ${
-                                    !isLoading
-                                        ? 'bg-green-600 text-white hover:bg-green-700 shadow-green-400/50'
-                                        : 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                                }`}
-                            >
-                                <IconZap className="w-5 h-5 mr-2" />
-                                {isLoading ? 'Analyzing...' : 'Identify Plant'}
-                            </button>
-                        )}
-
-                        {/* Retake/Cancel Button - Always show a way to reset if a photo is selected */}
-                         {imagePreviewUrl && (
-                            <button 
-                                onClick={() => { setImagePreviewUrl(null); setBase64Image(null); setMimeType(null); setError(null); }}
-                                disabled={isLoading}
-                                className="w-full py-2 text-sm text-red-500 hover:text-red-700 disabled:opacity-50"
-                            >
-                                <IconX className="w-4 h-4 inline-block mr-1"/> Clear Photo and Retake
-                            </button>
+                            // Buttons when image preview is showing (captured or uploaded)
+                            <div className="flex gap-4">
+                                <button
+                                    onClick={identifyPlant}
+                                    disabled={isLoading}
+                                    className={`flex-1 py-3 rounded-xl font-bold text-lg transition duration-150 flex items-center justify-center shadow-lg ${
+                                        !isLoading
+                                            ? 'bg-green-600 text-white hover:bg-green-700 shadow-green-400/50'
+                                            : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                                    }`}
+                                >
+                                    <IconZap className="w-5 h-5 mr-2" />
+                                    {isLoading ? 'Analyzing...' : 'Identify Plant'}
+                                </button>
+                                <button 
+                                    onClick={handleClearPhoto}
+                                    disabled={isLoading}
+                                    className="flex-1 bg-gray-200 text-gray-700 py-3 rounded-xl font-bold text-lg hover:bg-gray-300 transition duration-150 flex items-center justify-center shadow-md disabled:opacity-50"
+                                >
+                                    <IconX className="w-5 h-5 mr-2"/> Retake / Clear
+                                </button>
+                            </div>
                         )}
                     </div>
 
