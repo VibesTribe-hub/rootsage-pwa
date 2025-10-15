@@ -2,52 +2,132 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Web AR Image Analyzer</title>
+    <title>RootSage AR Plant Analyzer</title>
+    
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet@2.1.0/dist/mobilenet.min.js"></script>
+    <script src="https://cdn.jsdelivr.com/npm/@tensorflow-models/mobilenet@2.1.0/dist/mobilenet.min.js"></script>
+    
     <style>
-        body { margin: 0; background: #000; color: #fff; text-align: center; }
+        /* --- General RootSage UI Styling (Conceptual) --- */
+        body { 
+            margin: 0; 
+            font-family: Arial, sans-serif; 
+            background: #f0f0f0; 
+            color: #333; 
+            text-align: center; 
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        #main-content {
+            padding: 20px;
+            flex-grow: 1;
+        }
+        #profile-area {
+            background: #fff;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        #scan-button {
+            padding: 15px 30px;
+            font-size: 1.2em;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            margin-top: 20px;
+        }
+
+        /* --- AR Modal/Overlay Styling --- */
+        #ar-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #000;
+            z-index: 100;
+            display: none; /* Hidden by default */
+        }
         #videoElement { 
             width: 100vw; 
             height: 100vh; 
-            object-fit: cover; /* AR feel: cover the whole screen */
-            /* Removed 'transform: scaleX(-1)' for external camera (back camera) unless a front camera is used */
+            object-fit: cover; 
             position: absolute;
             top: 0;
             left: 0;
-            z-index: 1;
+            z-index: 101;
         }
         #results {
             position: fixed;
-            bottom: 20px;
+            bottom: 60px; /* Space for the close button */
             left: 50%;
             transform: translateX(-50%);
-            z-index: 10;
+            z-index: 103;
             background: rgba(0, 0, 0, 0.7);
             padding: 10px 20px;
             border-radius: 10px;
-            font-family: Arial, sans-serif;
             font-size: 1.2em;
+            color: #fff;
             text-align: left;
             min-width: 300px;
+        }
+        #close-button {
+            position: fixed;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 104;
+            padding: 10px 30px;
+            font-size: 1em;
+            background-color: #f44336;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
         }
     </style>
 </head>
 <body>
 
-    <video id="videoElement" autoplay muted playsinline></video>
+    <div id="main-content">
+        <h1>Welcome, RootSage Master!</h1>
+        <div id="profile-area">
+            <p><strong>Plants Identified:</strong> <span id="plant-count">0</span> / 50</p>
+            <p><strong>Current Badge:</strong> Apprentice Grower</p>
+            <p id="rootsage-message">Click "Scan Plant" to start your quest!</p>
+        </div>
+        
+        <button id="scan-button">Scan Plant</button>
+    </div>
 
-    <div id="results">
-        Initializing...
+    <div id="ar-modal">
+        <video id="videoElement" autoplay muted playsinline></video>
+        <div id="results">Initializing ML Model...</div>
+        <button id="close-button">Close Scanner</button>
     </div>
 
     <script>
-        // --- 2. Camera Access Setup ---
+        // --- Global Variables and Constants ---
+        const arModal = document.getElementById('ar-modal');
         const video = document.getElementById('videoElement');
         const resultsDiv = document.getElementById('results');
-        const FRAME_RATE = 5; // Analyze at 5 frames per second for better performance
+        const scanButton = document.getElementById('scan-button');
+        const closeButton = document.getElementById('close-button');
+        const rootsageMessage = document.getElementById('rootsage-message');
+        const plantCountElement = document.getElementById('plant-count');
 
-        // Request access to the camera with failover
+        const FRAME_RATE = 5; // Analyze at 5 frames per second
+        let model;
+        let isAnalyzing = false;
+        let classificationTimeout;
+        let currentPlantCount = 0; // State for your RootSage progress
+
+        // --- 2. Camera Access Setup (Triggered by Button Click) ---
         async function setupCamera() {
             resultsDiv.innerHTML = 'Requesting Camera Access...';
             try {
@@ -60,9 +140,10 @@
                 video.srcObject = stream;
                 video.play();
                 resultsDiv.innerHTML = 'Back Camera Active.';
+                return true;
 
             } catch (error) {
-                // If 'environment' fails, try the default camera (often front-facing)
+                // Failover to default camera (often front-facing)
                 try {
                     resultsDiv.innerHTML = 'Back camera unavailable. Trying default...';
                     let stream = await navigator.mediaDevices.getUserMedia({ 
@@ -73,30 +154,22 @@
                     video.srcObject = stream;
                     video.play();
                     
-                    // Add mirror effect if we suspect it's the front camera
+                    // Add mirror effect for typical front camera
                     video.style.transform = 'scaleX(-1)'; 
                     resultsDiv.innerHTML = 'Default Camera Active (Mirrored).';
+                    return true;
 
                 } catch (finalError) {
-                    // Both camera attempts failed
-                    resultsDiv.innerHTML = '❌ Error: Camera access failed. <br>Ensure a camera is available and permissions are granted.';
+                    resultsDiv.innerHTML = '❌ Error: Camera access failed. <br>Tap Close and try again.';
                     console.error('Final Camera Error:', finalError);
-                    return false; // Indicate failure
+                    return false;
                 }
             }
-
-            // Wait for the video to actually load data and start playing
-            return new Promise((resolve) => {
-                video.onloadeddata = () => {
-                     resolve(true); // Indicate success
-                };
-            });
         }
 
         // --- 3. ML Model Loading and Prediction ---
-        let model;
-
         async function loadModel() {
+            if (model) return true; // Model already loaded
             resultsDiv.innerHTML = 'Loading MobileNet Model...';
             try {
                 // Load a lighter model for mobile performance
@@ -114,39 +187,114 @@
         }
 
         async function classifyVideo() {
-            if (!model || video.paused || video.ended) return;
+            if (!model || video.paused || video.ended || !isAnalyzing) return;
 
-            // Make a prediction on the current video frame
+            // Wait for video data to be ready before classifying
+            if (video.readyState < video.HAVE_FUTURE_DATA) {
+                 classificationTimeout = setTimeout(classifyVideo, 1000 / FRAME_RATE);
+                 return;
+            }
+            
             const predictions = await model.classify(video);
 
-            // Display results
+            // Check for successful identification (90% confidence)
+            if (predictions[0].probability > 0.90) {
+                isAnalyzing = false; // Stop the loop
+                clearTimeout(classificationTimeout);
+                
+                const identifiedPlant = predictions[0].className.split(',')[0].trim();
+                
+                // --- HOOK INTO ROOT SAGE LOGIC HERE ---
+                RootSageApp.handleIdentification(identifiedPlant);
+
+                // Wait 3 seconds then close the scanner
+                resultsDiv.innerHTML = `✅ IDENTIFIED: ${identifiedPlant}! Updating RootSage Profile...`;
+                setTimeout(closeScanner, 3000);
+                return; 
+            }
+
+            // Display results while scanning
             let output = '<strong>What I See:</strong><br>';
-            
             predictions.slice(0, 3).forEach(prediction => {
                 const probability = (prediction.probability * 100).toFixed(2);
-                const className = prediction.className.split(',')[0].trim(); // Use only the primary label
+                const className = prediction.className.split(',')[0].trim();
                 output += `${className} (${probability}%)<br>`;
             });
-
             resultsDiv.innerHTML = output;
 
             // Use setTimeout to control the FPS for performance
-            setTimeout(classifyVideo, 1000 / FRAME_RATE);
+            classificationTimeout = setTimeout(classifyVideo, 1000 / FRAME_RATE);
         }
 
-        // --- 4. Main Execution ---
-        async function main() {
-            const cameraReady = await setupCamera();
-            if (!cameraReady) return;
+        // --- RootSage Integration Functions ---
 
-            const modelReady = await loadModel();
-            if (!modelReady) return;
+        const RootSageApp = {
+            handleIdentification: (plantName) => {
+                // --- 1. YOUR CORE ROOTSAGE LOGIC GOES HERE ---
+                
+                // For this example, we'll just update the count and message
+                currentPlantCount++;
+                plantCountElement.textContent = currentPlantCount;
 
-            // Start the continuous prediction loop
-            classifyVideo();
+                let message = `Successfully logged a new ${plantName}.`;
+                
+                if (currentPlantCount >= 50) {
+                    message = `ROOT SAGE MASTER UNLOCKED! 🏆 You identified 50 plants!`;
+                } else if (currentPlantCount % 10 === 0) {
+                     message = `NEW BADGE UNLOCKED! Keep going to Master level!`;
+                }
+                
+                rootsageMessage.innerHTML = message;
+
+                console.log(`Rootsage: Logged plant ${plantName}. Count is ${currentPlantCount}.`);
+            }
+        };
+
+        function startScanner() {
+            if (isAnalyzing) return;
+            isAnalyzing = true;
+            
+            // 1. Show the AR Modal
+            arModal.style.display = 'flex';
+            
+            // 2. Setup Camera and Load Model
+            setupCamera().then(cameraReady => {
+                if (!cameraReady) return;
+                
+                // Wait for the video to load before continuing
+                video.onloadeddata = () => {
+                    loadModel().then(modelReady => {
+                        if (modelReady) {
+                             // 3. Start the prediction loop
+                            classifyVideo();
+                        }
+                    });
+                };
+            });
         }
 
-        main();
+        function closeScanner() {
+            // Stop the analysis loop
+            isAnalyzing = false;
+            clearTimeout(classificationTimeout);
+
+            // Stop the camera stream
+            if (video.srcObject) {
+                video.srcObject.getTracks().forEach(track => track.stop());
+                video.srcObject = null;
+            }
+
+            // Hide the AR Modal
+            arModal.style.display = 'none';
+            resultsDiv.innerHTML = 'Scanner Closed.';
+        }
+
+        // --- Event Listeners ---
+        scanButton.addEventListener('click', startScanner);
+        closeButton.addEventListener('click', closeScanner);
+
+        // Initial message
+        rootsageMessage.innerHTML = 'Model scripts loaded. Click "Scan Plant" to request camera access and begin.';
     </script>
 </body>
 </html>
