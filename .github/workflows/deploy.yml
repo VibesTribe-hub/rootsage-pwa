@@ -4,7 +4,7 @@ name: Deploy RootSage App
 on:
   push:
     branches:
-      - main 
+      - main
 
 jobs:
   deploy:
@@ -15,24 +15,25 @@ jobs:
       
     permissions:
       contents: write # Required to push to the gh-pages branch
-      pages: write   # Required to deploy to GitHub Pages
+      pages: write    # Required to deploy to GitHub Pages
       id-token: write # Required for deployment configuration
       
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 1. Inject Firebase API Key
-      # This step uses 'sed' to find the placeholder and replace it with the secret value 
-      # you stored in your GitHub repository settings.
-      - name: Inject Firebase API Key
+      # 1. Inject API Keys (Firebase and Gemini)
+      # This step finds and replaces both API key placeholders with the actual secret values.
+      - name: Inject API Keys (Firebase and Gemini)
         run: |
-          # Use '#' as the delimiter for sed to avoid conflicts with '/' in the API Key value
-          # This command replaces $$FIREBASE_API_KEY$$ with the actual secret value.
+          # Replace $$FIREBASE_API_KEY$$ placeholder
           sed -i "s#\$\$FIREBASE_API_KEY\$\$#${{ secrets.FIREBASE_API_KEY }}#g" index.html
+          
+          # Replace $$GEMINI_API_KEY$$ placeholder for image analysis
+          sed -i "s#\$\$GEMINI_API_KEY\$\$#${{ secrets.GEMINI_API_KEY }}#g" index.html
         env:
-          # Ensure the secret is present before running the command
           FIREBASE_API_KEY: ${{ secrets.FIREBASE_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }} # <-- NEW: Add Gemini API Key to environment
 
       # 2. Setup GitHub Pages deployment environment
       - name: Setup Pages
