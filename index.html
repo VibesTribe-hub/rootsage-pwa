@@ -101,11 +101,17 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useMemo, useCallback } = React;
+        const { useState, useEffect, useMemo, useCallback, useRef } = React;
         const ReactDOM = window.ReactDOM;
 
-        // --- FIREBASE PATHS & CONSTANTS (From index (3).html) ---
-        const appId = 'default-app-id'; // Use a placeholder if not defined globally
+        // --- GEMINI/FIREBASE API KEY PLACEHOLDER (UPDATED) ---
+        // ⚠️ ACTION REQUIRED: Replace this placeholder with your actual API Key. 
+        // This is assumed to be the same key used for Firebase and the Gemini API during deployment.
+        const API_KEY = "$$FIREBASE_API_KEY$$"; 
+        // ------------------------------------------------------
+
+        // --- FIREBASE PATHS & CONSTANTS ---
+        const appId = 'default-app-id'; 
         const USER_DATA_PATH = `/artifacts/${appId}/users`;
         
         const INITIAL_USER_DATA = {
@@ -115,7 +121,7 @@
             lastActivity: null,
         };
 
-        // --- FIREBASE HOOKS (From index (3).html) ---
+        // --- FIREBASE HOOKS ---
 
         const useAuth = () => {
             const [user, setUser] = useState(null);
@@ -123,9 +129,9 @@
             const [dbInstance, setDbInstance] = useState(null);
             const [authInstance, setAuthInstance] = useState(null);
             const [authProvider, setAuthProvider] = useState(null);
+            const [authError, setAuthError] = useState(null); // NEW: Error state for sign-in
 
             useEffect(() => {
-                // Check if the required Firebase variables are exposed by the module script
                 if (window.auth && window.db && window.GoogleAuthProvider) {
                     setAuthInstance(window.auth);
                     setDbInstance(window.db);
@@ -142,18 +148,28 @@
 
                     return () => unsubscribe();
                 } else {
-                    // This path is hit if the module script failed to run, setting the app to local-only mode
                     console.error("Firebase instances not globally available. Running in local mode.");
                     setIsAuthReady(true); 
                 }
             }, []);
 
             const signInWithGoogle = useCallback(async () => {
+                setAuthError(null); // Clear previous errors
                 if (!authInstance || !authProvider) return;
                 try {
                     await window.signInWithPopup(authInstance, authProvider);
                 } catch (error) {
                     console.error("Google Sign-In failed:", error);
+                    // Provide a user-friendly error message
+                    let message = "Sign-In Failed. Check console for details.";
+                    if (error.code === 'auth/popup-closed-by-user') {
+                        message = "Sign-in cancelled by user or the popup was blocked by your browser. Please try again.";
+                    } else if (error.code === 'auth/cancelled-popup-request') {
+                        message = "Sign-in attempt interrupted. Please ensure only one attempt is active.";
+                    } else if (error.code === 'auth/unauthorized-domain') {
+                        message = "Authentication Error: Unauthorized domain. Please check your Firebase console settings.";
+                    }
+                    setAuthError(message);
                 }
             }, [authInstance, authProvider]);
 
@@ -167,7 +183,7 @@
                 }
             }, [authInstance]);
 
-            return { user, isAuthReady, dbInstance, signInWithGoogle, signOutUser, userId: user?.uid };
+            return { user, isAuthReady, dbInstance, signInWithGoogle, signOutUser, userId: user?.uid, authError }; // Return authError
         };
 
         const useUserData = (userId, dbInstance, isAuthReady) => {
@@ -276,7 +292,7 @@
             return { collections, loading, addPlantToCollection };
         };
        
-        // --- Custom Theme/Styles (Using Hex for consistency with user request) ---
+        // --- Custom Theme/Styles ---
         const COLORS = {
             SAND: '#FBF3D4',
             DARK_GREEN: '#1D4520',
@@ -294,9 +310,23 @@
             });
         };
 
-        // --- API Calls (Contained within this file) ---
+        // --- API Calls ---
+
+        const checkApiKey = () => {
+            // UPDATED: Check for the $$FIREBASE_API_KEY$$ placeholder
+            if (API_KEY === "$$FIREBASE_API_KEY$$" || !API_KEY || API_KEY.length < 5) {
+                throw new Error("API_KEY not configured. Please replace the $$FIREBASE_API_KEY$$ placeholder in the code script to enable AI features.");
+            }
+        }
 
         const generateRecipes = async (plantName) => {
+            try {
+                checkApiKey(); // Check key before call
+            } catch (error) {
+                console.error("Gemini Recipe API Error:", error.message);
+                return [];
+            }
+            
             const systemPrompt = `Act as a culinary expert. Generate 3 creative and simple recipes suitable for a home cook using the ingredient: ${plantName}. The response must be a valid JSON array matching the provided schema.`;
             const userQuery = `Generate 3 recipes using ${plantName}.`;
             const payload = {
@@ -342,6 +372,12 @@
         };
 
         const identifyPlant = async (base64Image) => {
+             try {
+                checkApiKey(); // Check key before call
+            } catch (error) {
+                throw new Error(error.message);
+            }
+
             const systemPrompt = `You are the Rootsage Identification Bot. Your task is to analyze the provided image of a plant and return the single most likely identification in a specific JSON format. Do not include any other text or explanation.
 
             JSON Schema required:
@@ -404,13 +440,19 @@
                 return {
                     name: "Identification Failed",
                     confidence: "0%",
-                    analysis: "Could not identify the plant. Please ensure the image is clear and well-lit.",
+                    analysis: `Could not identify the plant. Error: ${error.message || 'Network failure'}`,
                     funFact: "Try taking the picture from a different angle!"
                 };
             }
         };
 
         const diagnosePlant = async (base64Image, prompt) => {
+            try {
+                checkApiKey(); // Check key before call
+            } catch (error) {
+                return error.message;
+            }
+
             const systemPrompt = "You are the Rootsage Plant Doctor. Analyze the provided image of a plant. If a disease is detected, identify it and provide clear, actionable care instructions (how to treat it and prevent recurrence). If no disease is detected, confirm the plant is healthy and provide general care tips.";
             const userQuery = `Diagnose the health of this plant based on the image: ${prompt}`;
             const payload = {
@@ -441,12 +483,12 @@
                 throw new Error('Diagnosis failed after multiple retries.');
             } catch (error) {
                 console.error("Gemini Doctor API Error:", error);
-                return "An error occurred while connecting to the Plant Doctor service. Check your network or API key.";
+                return `An error occurred while connecting to the Plant Doctor service. Error: ${error.message || 'Network failure'}`;
             }
         };
 
 
-        // --- Data Models and Logic (From index (2).html) ---
+        // --- Data Models and Logic ---
 
         const defaultProfile = {
             bio: "Aspiring botanist and green thumb!",
@@ -461,7 +503,6 @@
         };
 
         const MOCK_SEASONAL_QUESTS = [
-            // Updated to use consistent 'requiredCollectible' for accurate completion check
             { id: 'q1', name: 'Spring Quest: Harvest Ramps (Wild Leeks)', isSeasonal: true, requiredCollectible: 'Wild Leek', status: 'In Progress', caution: true, badge: '🧄' },
             { id: 'q2', name: 'Summer Quest: Spruce Tip Sugar', isSeasonal: true, requiredCollectible: 'Spruce Tip', status: 'In Progress', caution: false, badge: '🌲🍯' },
             { id: 'q3', name: 'Autumn Quest: Identify Edible Mushrooms', isSeasonal: true, requiredCollectible: 'Mushroom', status: 'Locked', caution: true, badge: '🍄' },
@@ -621,21 +662,24 @@
             );
         };
 
-        // --- Placeholder Components for Structure (Must be in index (2).html) ---
-
+        // --- Identify Plant Component (Updated Upload Button) ---
         const IdentifyPlant = ({ identifyPlant, fileToBase64, addPlantToCollection, updateScore }) => {
             const [file, setFile] = useState(null);
             const [imagePreview, setImagePreview] = useState(null);
             const [isIdentifying, setIsIdentifying] = useState(false);
             const [result, setResult] = useState(null);
             const [message, setMessage] = useState('');
+            const fileInputRef = useRef(null); // Ref for hidden input
 
             const handleFileChange = (e) => {
                 const selectedFile = e.target.files[0];
                 if (selectedFile) {
                     setFile(selectedFile);
+                    // Revoke previous URL if one exists
+                    if (imagePreview) URL.revokeObjectURL(imagePreview);
                     setImagePreview(URL.createObjectURL(selectedFile));
                     setResult(null);
+                    setMessage('');
                 }
             };
 
@@ -643,7 +687,9 @@
                 if (!file) return;
 
                 setIsIdentifying(true);
-                setMessage('Uploading and identifying plant...');
+                setMessage('Uploading and analyzing plant...');
+                setResult(null); // Clear previous result
+
                 try {
                     const base64Image = await fileToBase64(file);
                     const identificationResult = await identifyPlant(base64Image);
@@ -655,11 +701,10 @@
                             name: identificationResult.name, 
                             commonName: identificationResult.name.split('(')[0].trim(),
                             analysis: identificationResult.analysis,
-                            imageUrl: imagePreview, // Use local URL for display, or a cloud upload URL in a real app
+                            imageUrl: imagePreview, 
                             confidence: identificationResult.confidence 
                         });
                         
-                        // Update score for a successful collection (e.g., 10 points)
                         if (saveResponse.success) {
                              await updateScore(10);
                              setMessage(`Identified! ${saveResponse.message}`);
@@ -667,16 +712,17 @@
                             setMessage(`Identified! (Local save only. ${saveResponse.message})`);
                         }
                     } else {
-                        setMessage("Identification failed. Please try again.");
+                        // Display the error from the analysis field if ID failed
+                        setMessage(identificationResult.analysis);
                     }
 
                 } catch (error) {
+                    // Catch the API Key configuration error here
                     console.error("Identification process error:", error);
-                    setMessage("An error occurred during identification.");
+                    setMessage(`Error: ${error.message}. Please check console.`);
                 } finally {
                     setIsIdentifying(false);
-                    setFile(null);
-                    setImagePreview(null);
+                    // Do not clear file/preview so user can re-try or see what they submitted
                 }
             };
 
@@ -692,15 +738,27 @@
                     <h2 className="text-2xl font-bold" style={{ color: COLORS.DARK_GREEN }}>Plant Identifier</h2>
                     
                     <div className="bg-white p-4 rounded-xl shadow-lg border border-gray-200">
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                        <label className="block text-sm font-medium text-gray-700 mb-3">
                             Capture or Select Image
                         </label>
+                        
+                        {/* Hidden Input */}
                         <input
                             type="file"
                             accept="image/*"
                             onChange={handleFileChange}
-                            className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-green-50 file:text-green-700 hover:file:bg-green-100"
+                            ref={fileInputRef}
+                            className="hidden" 
                         />
+
+                        {/* Custom Upload Button */}
+                        <button
+                            onClick={() => fileInputRef.current?.click()}
+                            className="w-full py-3 rounded-xl text-white font-bold transition duration-300 shadow-md flex items-center justify-center space-x-2 bg-green-600 hover:bg-green-700"
+                        >
+                            <CameraIcon className="w-5 h-5" />
+                            <span>{file ? 'Change Selected Image' : 'Upload Image'}</span>
+                        </button>
                     </div>
 
                     {imagePreview && (
@@ -711,7 +769,7 @@
                                 onClick={handleIdentify}
                                 disabled={isIdentifying || !file}
                                 className={`w-full py-3 rounded-xl text-white font-bold transition duration-300 shadow-lg ${
-                                    isIdentifying ? 'bg-gray-500 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'
+                                    isIdentifying ? 'bg-gray-500 cursor-not-allowed' : 'bg-green-700 hover:bg-green-800'
                                 }`}
                             >
                                 {isIdentifying ? 'Analyzing...' : 'Identify Plant'}
@@ -721,7 +779,7 @@
                     
                     {message && <p className="text-center text-sm font-medium italic" style={{ color: isIdentifying ? COLORS.BROWN : COLORS.DARK_GREEN }}>{message}</p>}
 
-                    {result && (
+                    {result && result.name !== "Identification Failed" && (
                         <div className="bg-white p-4 rounded-xl shadow-lg border-t-4 border-green-500">
                             <h3 className="text-xl font-extrabold mb-3" style={{ color: COLORS.FOREST_GREEN }}>{result.name}</h3>
                             <div className="grid grid-cols-2 gap-3 mb-4">
@@ -736,17 +794,20 @@
             );
         };
 
+        // --- Plant Doctor Component (Updated Upload Button) ---
         const PlantDoctor = ({ diagnosePlant, fileToBase64 }) => {
             const [file, setFile] = useState(null);
             const [imagePreview, setImagePreview] = useState(null);
             const [prompt, setPrompt] = useState("");
             const [isDiagnosing, setIsDiagnosing] = useState(false);
             const [diagnosisResult, setDiagnosisResult] = useState('');
+            const fileInputRef = useRef(null); // Ref for hidden input
 
             const handleFileChange = (e) => {
                 const selectedFile = e.target.files[0];
                 if (selectedFile) {
                     setFile(selectedFile);
+                    if (imagePreview) URL.revokeObjectURL(imagePreview);
                     setImagePreview(URL.createObjectURL(selectedFile));
                     setDiagnosisResult('');
                 }
@@ -756,7 +817,7 @@
                 if (!file) return;
 
                 setIsDiagnosing(true);
-                setDiagnosisResult('Diagnosing plant health...');
+                setDiagnosisResult('Running in-depth diagnosis...');
 
                 try {
                     const base64Image = await fileToBase64(file);
@@ -765,7 +826,7 @@
 
                 } catch (error) {
                     console.error("Diagnosis error:", error);
-                    setDiagnosisResult("An error occurred during diagnosis.");
+                    setDiagnosisResult(`An error occurred during diagnosis. Error: ${error.message}`);
                 } finally {
                     setIsDiagnosing(false);
                 }
@@ -780,13 +841,26 @@
                          <label className="block text-sm font-medium text-gray-700">
                             Capture or Select Image of Ailing Plant
                         </label>
+                         
+                        {/* Hidden Input */}
                         <input
                             type="file"
                             accept="image/*"
                             onChange={handleFileChange}
-                            className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-brown-50 file:text-brown-700 hover:file:bg-brown-100"
-                            style={{'--tw-bg-opacity': 1, 'backgroundColor': COLORS.SAND, 'color': COLORS.BROWN }}
+                            ref={fileInputRef}
+                            className="hidden"
                         />
+
+                        {/* Custom Upload Button */}
+                        <button
+                            onClick={() => fileInputRef.current?.click()}
+                            className="w-full py-3 rounded-xl text-white font-bold transition duration-300 shadow-md flex items-center justify-center space-x-2"
+                            style={{ backgroundColor: COLORS.BROWN, hover: 'bg-brown-700' }}
+                        >
+                            <HeartIcon className="w-5 h-5" />
+                            <span>{file ? 'Change Selected Image' : 'Upload Image'}</span>
+                        </button>
+                        
                         {imagePreview && (
                             <img src={imagePreview} alt="Ailing Plant Preview" className="w-full h-40 object-contain rounded-lg shadow-inner mt-2" />
                         )}
@@ -856,7 +930,7 @@
                                             <span className="text-xs font-semibold px-2 py-0.5 rounded-full text-white" style={{ backgroundColor: COLORS.FOREST_GREEN }}>
                                                 {plant.confidence}
                                             </span>
-                                            <span className="text-xs text-gray-500">{new Date(plant.collectedAt?.seconds * 1000).toLocaleDateString()}</span>
+                                            <span className="text-xs text-gray-500">{plant.collectedAt ? new Date(plant.collectedAt.seconds * 1000).toLocaleDateString() : 'Date N/A'}</span>
                                         </div>
                                     </div>
                                 </div>
@@ -898,7 +972,7 @@
                     <div className="fixed inset-0 bg-black bg-opacity-50 z-20 flex justify-center items-center p-4">
                         <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto shadow-2xl">
                             <div className="relative">
-                                <img src={selectedPlant.imageUrl} alt={commonName} className="w-full h-48 object-cover rounded-t-2xl" />
+                                <img src={selectedPlant.imageUrl || "https://placehold.co/100x100/34D399/ffffff?text=P"} alt={commonName} className="w-full h-48 object-cover rounded-t-2xl" />
                                 <button onClick={() => setSelectedPlant(null)} className="absolute top-3 right-3 p-2 bg-white rounded-full shadow-lg text-gray-600 hover:text-gray-900">
                                     <CrossIcon className="w-5 h-5" />
                                 </button>
@@ -931,7 +1005,7 @@
                                     </div>
                                 )}
                                 {!isGenerating && recipes && recipes.length === 0 && (
-                                    <p className="text-center text-red-500 text-sm">Could not generate recipes for this plant.</p>
+                                    <p className="text-center text-red-500 text-sm">Could not generate recipes for this plant. Check API Key configuration or console for errors.</p>
                                 )}
                             </div>
                         </div>
@@ -963,7 +1037,7 @@
                                     <div className="flex-grow">
                                         <p className="text-base font-bold truncate" style={{ color: COLORS.DARK_GREEN }}>{plant.name.split('(')[0].trim()}</p>
                                         <p className="text-xs italic text-gray-500 truncate">{plant.name.includes('(') ? plant.name.match(/\(([^)]+)\)/)[1] : 'Unknown species'}</p>
-                                        <span className="text-xs text-gray-500">Collected: {new Date(plant.collectedAt?.seconds * 1000).toLocaleDateString()}</span>
+                                        <span className="text-xs text-gray-500">Collected: {plant.collectedAt ? new Date(plant.collectedAt.seconds * 1000).toLocaleDateString() : 'Date N/A'}</span>
                                     </div>
                                     <button className="text-green-600 p-2 ml-2 hover:bg-green-50 rounded-full">
                                         <BookIcon className="w-5 h-5" />
@@ -981,12 +1055,11 @@
             const getQuestStatus = (quest) => {
                 if (quest.status === 'Locked') return 'Locked';
                 const count = collections.filter(c => c.name.includes(quest.requiredCollectible)).length;
-                if (quest.id === 'q4') { // Year-Round: Identify 10 Fungi
+                if (quest.id === 'q4') { 
                     const fungiCount = collections.filter(c => c.name.toLowerCase().includes('fungi') || c.name.toLowerCase().includes('mushroom')).length;
                     if (fungiCount >= 10) return 'Completed';
                 }
                 
-                // Simple check for existence of required collectible
                 if (collections.some(c => c.name.includes(quest.requiredCollectible))) {
                     return 'Completed';
                 }
@@ -1051,13 +1124,19 @@
             );
         };
         
-        const Profile = ({ userData, collections, signOutUser, signInWithGoogle, user }) => {
+        const Profile = ({ userData, collections, signOutUser, signInWithGoogle, user, authError }) => { // Receiving authError
             const tier = getBadgeTier(collections.length);
             const nextTierText = tier.nextTier > collections.length ? `Collect ${tier.nextTier - collections.length} more to reach the next tier!` : 'You have reached the highest tier!';
 
             const AuthBlock = () => (
                 <div className="mt-4 p-4 bg-white rounded-xl shadow-lg border border-gray-200">
                     <h3 className="text-lg font-bold mb-3" style={{ color: COLORS.DARK_GREEN }}>Account</h3>
+                    {authError && ( // Displaying authentication error
+                        <div className="mt-3 p-3 bg-red-100 border border-red-400 text-red-700 rounded-lg text-sm font-medium mb-3">
+                            <p className="font-bold">Login Failed:</p>
+                            <p>{authError}</p>
+                        </div>
+                    )}
                     {user ? (
                         <div className="space-y-2">
                             <p className="text-sm text-gray-700">Signed in as: <span className="font-semibold">{user.email || userData.displayName}</span></p>
@@ -1077,7 +1156,7 @@
                             >
                                 <LoginIcon className="w-5 h-5 mr-2" /> Sign In with Google
                             </button>
-                            <p className="text-xs text-center text-gray-500">Currently using anonymous/guest profile.</p>
+                            <p className="text-xs text-center text-gray-500 mt-2">Currently using anonymous/guest profile.</p>
                         </div>
                     )}
                 </div>
@@ -1122,30 +1201,23 @@
 
         // --- Main App Component ---
         const App = () => {
-            // New Firebase Hooks from index (3).html
-            const { user, isAuthReady, dbInstance, signInWithGoogle, signOutUser, userId } = useAuth();
+            const { user, isAuthReady, dbInstance, signInWithGoogle, signOutUser, userId, authError } = useAuth(); // Getting authError
             const { userData, updateScore } = useUserData(userId, dbInstance, isAuthReady);
             const { collections, loading: collectionsLoading, addPlantToCollection } = useCollections(dbInstance, isAuthReady, userId);
 
-            // State from index (2).html
             const [isAgreed, setIsAgreed] = useState(false);
-            const [showPreloader, setShowPreloader] = useState(true); // Visual preloader status
+            const [showPreloader, setShowPreloader] = useState(true); 
             const [currentPage, setCurrentPage] = useState('identify');
             
-            // Effect to manage the preloader visual timeout
             useEffect(() => {
-                // The BouncingLogoPreloader has its own internal timeout
-                // We'll let it run and set showPreloader to false
+                // Preloader timeout is handled by BouncingLogoPreloader component
             }, []); 
 
-            // Wait for agreement, preloader timeout, and Firebase Auth readiness
             if (!isAgreed) return <AgreementGate onAgree={() => setIsAgreed(true)} />;
             if (showPreloader || !isAuthReady || !userData) {
-                // userData check ensures we have the profile data loaded or created
                 return <BouncingLogoPreloader onAnimationEnd={setShowPreloader} />;
             }
             
-            // Props to pass to all page components
             const pageProps = {
                 // Firebase/Data
                 collections: collections,
@@ -1155,6 +1227,7 @@
                 user: user,
                 signOutUser: signOutUser,
                 signInWithGoogle: signInWithGoogle,
+                authError: authError, // Passing authError to Profile
 
                 // Gemini API helpers
                 generateRecipes,
