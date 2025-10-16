@@ -4,23 +4,78 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Rootsage: Ethical Foraging</title>
-    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- React and Babel -->
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <!-- Firebase Imports (Required for all React/HTML firebase functionality) -->
+    
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot, collection, query, addDoc, getDoc, updateDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        
-        // Expose Firebase functions globally for the React/Babel script to use
-        window.firebase = {
-            initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, getFirestore,
-            doc, setDoc, onSnapshot, collection, query, addDoc, getDoc, updateDoc, deleteDoc
+        import { 
+            getAuth, 
+            signInAnonymously, 
+            signInWithCustomToken, 
+            onAuthStateChanged, 
+            GoogleAuthProvider, 
+            signInWithPopup,
+            signOut
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { 
+            getFirestore, 
+            doc, 
+            collection, 
+            setDoc, 
+            getDoc, 
+            onSnapshot,
+            serverTimestamp,
+            getDocs,
+            query,
+            where
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+
+
+        // --- SECURITY FIX: Use Placeholder for GitHub Actions Injection ---
+        // The GitHub Action (deploy.yml) will replace $$FIREBASE_API_KEY$$ with the secret value during build.
+        const SECURE_FIREBASE_CONFIG = {
+            apiKey: "$$FIREBASE_API_KEY$$",
+            authDomain: "rootsagev2.firebaseapp.com",
+            projectId: "rootsagev2",
+            storageBucket: "rootsagev2.firebasestorage.app",
+            messagingSenderId: "355755573557",
+            appId: "1:355755573557:web:5e23d0587264097934cc7c"
         };
+        // ------------------------------------------------------------------
+
+        // Global variables provided by the environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        
+        // Initialize Firebase
+        const firebaseApp = initializeApp(SECURE_FIREBASE_CONFIG);
+        const db = getFirestore(firebaseApp);
+        const auth = getAuth(firebaseApp);
+        
+        // Expose Firebase functions to the global window object for use in the Babel script
+        window.firebaseApp = firebaseApp;
+        window.db = db;
+        window.auth = auth;
+        window.onAuthStateChanged = onAuthStateChanged;
+        window.signInWithPopup = signInWithPopup;
+        window.GoogleAuthProvider = GoogleAuthProvider;
+        window.signOut = signOut;
+        window.collection = collection;
+        window.doc = doc;
+        window.setDoc = setDoc;
+        window.getDoc = getDoc;
+        window.onSnapshot = onSnapshot;
+        window.serverTimestamp = serverTimestamp;
+        window.getDocs = getDocs;
+        window.query = query;
+        window.where = where;
+
+        // Ensure logging is set for better debugging visibility
+        setLogLevel('Debug');
     </script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap" rel="stylesheet">
     <style>
@@ -49,17 +104,177 @@
         const { useState, useEffect, useMemo, useCallback } = React;
         const ReactDOM = window.ReactDOM;
 
-        // --- SECURITY FIX: Use Placeholder for GitHub Actions Injection ---
-        // The GitHub Action (deploy.yml) will replace $$FIREBASE_API_KEY$$ with the secret value during build.
-        const SECURE_FIREBASE_CONFIG = {
-            apiKey: "$$FIREBASE_API_KEY$$",
-            authDomain: "rootsagev2.firebaseapp.com",
-            projectId: "rootsagev2",
-            storageBucket: "rootsagev2.firebasestorage.app",
-            messagingSenderId: "355755573557",
-            appId: "1:355755573557:web:5e23d0587264097934cc7c"
+        // --- FIREBASE PATHS & CONSTANTS (From index (3).html) ---
+        const appId = 'default-app-id'; // Use a placeholder if not defined globally
+        const USER_DATA_PATH = `/artifacts/${appId}/users`;
+        
+        const INITIAL_USER_DATA = {
+            displayName: "Anonymous User",
+            score: 0,
+            collections: 0,
+            lastActivity: null,
         };
-        // ------------------------------------------------------------------
+
+        // --- FIREBASE HOOKS (From index (3).html) ---
+
+        const useAuth = () => {
+            const [user, setUser] = useState(null);
+            const [isAuthReady, setIsAuthReady] = useState(false);
+            const [dbInstance, setDbInstance] = useState(null);
+            const [authInstance, setAuthInstance] = useState(null);
+            const [authProvider, setAuthProvider] = useState(null);
+
+            useEffect(() => {
+                // Check if the required Firebase variables are exposed by the module script
+                if (window.auth && window.db && window.GoogleAuthProvider) {
+                    setAuthInstance(window.auth);
+                    setDbInstance(window.db);
+                    setAuthProvider(new window.GoogleAuthProvider());
+                    
+                    const unsubscribe = window.onAuthStateChanged(window.auth, (currentUser) => {
+                        if (currentUser) {
+                            setUser(currentUser);
+                        } else {
+                            setUser(null);
+                        }
+                        setIsAuthReady(true);
+                    });
+
+                    return () => unsubscribe();
+                } else {
+                    // This path is hit if the module script failed to run, setting the app to local-only mode
+                    console.error("Firebase instances not globally available. Running in local mode.");
+                    setIsAuthReady(true); 
+                }
+            }, []);
+
+            const signInWithGoogle = useCallback(async () => {
+                if (!authInstance || !authProvider) return;
+                try {
+                    await window.signInWithPopup(authInstance, authProvider);
+                } catch (error) {
+                    console.error("Google Sign-In failed:", error);
+                }
+            }, [authInstance, authProvider]);
+
+            const signOutUser = useCallback(async () => {
+                if (!authInstance) return;
+                try {
+                    await window.signOut(authInstance);
+                    setUser(null);
+                } catch (error) {
+                    console.error("Sign-out failed:", error);
+                }
+            }, [authInstance]);
+
+            return { user, isAuthReady, dbInstance, signInWithGoogle, signOutUser, userId: user?.uid };
+        };
+
+        const useUserData = (userId, dbInstance, isAuthReady) => {
+            const [data, setData] = useState(null);
+            
+            useEffect(() => {
+                if (!isAuthReady || !dbInstance || !userId) {
+                    setData(INITIAL_USER_DATA);
+                    return;
+                }
+
+                const userDocRef = window.doc(dbInstance, USER_DATA_PATH, userId);
+                
+                const unsubscribe = window.onSnapshot(userDocRef, async (docSnapshot) => {
+                    if (docSnapshot.exists()) {
+                        setData(docSnapshot.data());
+                    } else {
+                        const newUserData = {
+                            ...INITIAL_USER_DATA,
+                            displayName: window.auth.currentUser?.displayName || "Anonymous User",
+                            createdAt: window.serverTimestamp(),
+                            userId: userId,
+                        };
+                        try {
+                            await window.setDoc(userDocRef, newUserData);
+                            setData(newUserData);
+                        } catch (e) {
+                            console.error("Error creating user document:", e);
+                            setData(INITIAL_USER_DATA);
+                        }
+                    }
+                }, (error) => {
+                    console.error("Error listening to user data:", error);
+                    setData(INITIAL_USER_DATA);
+                });
+
+                return () => unsubscribe();
+            }, [userId, dbInstance, isAuthReady]);
+
+            const updateScore = useCallback(async (points) => {
+                if (!dbInstance || !userId) return;
+                const userDocRef = window.doc(dbInstance, USER_DATA_PATH, userId);
+                try {
+                    await window.setDoc(userDocRef, { 
+                        score: (data?.score || 0) + points,
+                        lastActivity: window.serverTimestamp()
+                    }, { merge: true });
+                } catch (e) {
+                    console.error("Error updating score:", e);
+                }
+            }, [dbInstance, userId, data]);
+
+            return { userData: data, updateScore };
+        };
+
+        const useCollections = (dbInstance, isAuthReady, userId) => {
+            const [collections, setCollections] = useState([]);
+            const [loading, setLoading] = useState(true);
+
+            useEffect(() => {
+                if (!isAuthReady || !dbInstance || !userId) {
+                    setCollections([]);
+                    setLoading(false);
+                    return;
+                }
+                
+                const userCollectionsRef = window.collection(dbInstance, USER_DATA_PATH, userId, 'my_plants');
+
+                const unsubscribe = window.onSnapshot(userCollectionsRef, (snapshot) => {
+                    const list = snapshot.docs.map(doc => ({
+                        id: doc.id,
+                        ...doc.data()
+                    }));
+                    setCollections(list);
+                    setLoading(false);
+                }, (error) => {
+                    console.error("Error fetching collections:", error);
+                    setLoading(false);
+                });
+
+                return () => unsubscribe();
+            }, [dbInstance, isAuthReady, userId]);
+
+            const addPlantToCollection = useCallback(async (plantData) => {
+                if (!dbInstance || !userId) {
+                    return { success: false, message: "Authentication required to save." };
+                }
+
+                const userCollectionsRef = window.collection(dbInstance, USER_DATA_PATH, userId, 'my_plants');
+                
+                try {
+                    const newDocRef = window.doc(userCollectionsRef);
+                    await window.setDoc(newDocRef, {
+                        ...plantData,
+                        collectedAt: window.serverTimestamp(),
+                        userId: userId,
+                    });
+                    
+                    return { success: true, message: "Plant added to collection!" };
+                } catch (e) {
+                    console.error("Error adding plant to collection:", e);
+                    return { success: false, message: "Failed to add plant to collection." };
+                }
+            }, [dbInstance, userId]);
+
+            return { collections, loading, addPlantToCollection };
+        };
        
         // --- Custom Theme/Styles (Using Hex for consistency with user request) ---
         const COLORS = {
@@ -231,7 +446,7 @@
         };
 
 
-        // --- Data Models and Logic ---
+        // --- Data Models and Logic (From index (2).html) ---
 
         const defaultProfile = {
             bio: "Aspiring botanist and green thumb!",
@@ -269,13 +484,14 @@
         const CrossIcon = (props) => <Icon {...props} d="M6 18L18 6M6 6l12 12" />;
         const PlusIcon = (props) => <Icon {...props} d="M12 4v16m8-8H4" />;
         const TrophyIcon = (props) => <Icon {...props} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />;
+        const LoginIcon = (props) => <Icon {...props} d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1" />;
 
 
         // --- Preloader Component ---
         const BouncingLogoPreloader = ({ onAnimationEnd }) => {
             React.useEffect(() => {
                 const timer = setTimeout(() => {
-                    onAnimationEnd(true);
+                    onAnimationEnd(false); // Set preloader off after 3s
                 }, 3000); // 3 seconds for the bouncing animation
                 return () => clearTimeout(timer);
             }, [onAnimationEnd]);
@@ -353,13 +569,7 @@
                         <StewardshipCode />
 
                         <div className="mt-6 p-4 bg-white rounded-xl shadow-lg border border-gray-200">
-                            <input
-                                type="checkbox"
-                                id="agree-check"
-                                checked={isAccepted}
-                                onChange={(e) => setIsAccepted(e.target.checked)}
-                                className="form-checkbox h-5 w-5 text-green-600 rounded focus:ring-green-500"
-                            />
+                            <input type="checkbox" id="agree-check" checked={isAccepted} onChange={(e) => setIsAccepted(e.target.checked)} className="form-checkbox h-5 w-5 text-green-600 rounded focus:ring-green-500" />
                             <label htmlFor="agree-check" className="ml-3 text-sm font-medium text-gray-800">
                                 I have read, understand, and agree to the Consumption and Stewardship terms.
                             </label>
@@ -378,23 +588,16 @@
             );
         };
 
-
         // --- Nav Bar Component ---
-
         const NavBar = ({ currentPage, setCurrentPage, badgeCount }) => {
             const badge = getBadgeTier(badgeCount);
             const NavItem = ({ page, icon, label }) => (
                 <button
                     onClick={() => setCurrentPage(page)}
                     className={`p-3 flex flex-col items-center justify-center text-xs transition-colors rounded-xl ${
-                        currentPage === page
-                            ? 'text-white shadow-lg shadow-green-500/50'
-                            : 'text-gray-600 hover:text-green-600'
+                        currentPage === page ? 'text-white shadow-lg shadow-green-500/50' : 'text-gray-600 hover:text-green-600'
                     }`}
-                    style={{ 
-                        backgroundColor: currentPage === page ? COLORS.FOREST_GREEN : 'transparent',
-                        color: currentPage === page ? COLORS.SAND : COLORS.DARK_GREEN
-                    }}
+                    style={{ backgroundColor: currentPage === page ? COLORS.FOREST_GREEN : 'transparent', color: currentPage === page ? COLORS.SAND : COLORS.DARK_GREEN }}
                 >
                     {icon}
                     <span className="mt-1 text-[10px] font-medium">{label}</span>
@@ -411,247 +614,250 @@
                         <NavItem page="quests" label="Quests" icon={<TrophyIcon className="w-5 h-5" />} />
                         <NavItem page="profile" label="Profile" icon={<UserIcon className="w-5 h-5" />} />
                     </div>
-                    <div className={`absolute top-0 right-2 -translate-y-full px-2 py-1 text-xs font-semibold rounded-t-lg text-white ${badge.color} shadow-lg`}>
-                        {badge.icon} {badge.name}
+                    <div className={`absolute top-0 right-2 -translate-y-full px-3 py-1 text-xs font-bold rounded-full shadow-lg ${badge.color} text-white transition-all duration-300 transform ${badgeCount > 0 ? 'scale-100' : 'scale-0'}`}>
+                        {badgeCount} {badge.icon}
                     </div>
                 </div>
             );
         };
 
+        // --- Placeholder Components for Structure (Must be in index (2).html) ---
 
-        // --- Page Components (Themed) ---
+        const IdentifyPlant = ({ identifyPlant, fileToBase64, addPlantToCollection, updateScore }) => {
+            const [file, setFile] = useState(null);
+            const [imagePreview, setImagePreview] = useState(null);
+            const [isIdentifying, setIsIdentifying] = useState(false);
+            const [result, setResult] = useState(null);
+            const [message, setMessage] = useState('');
 
-        const IdentifyPlant = ({ userId, db, addCollectible, setCurrentPage }) => {
-            const [imageFileUrl, setImageFileUrl] = useState(null);
-            const [base64Image, setBase64Image] = useState(null);
-            const [analysis, setAnalysis] = useState(null);
-            const [isLoading, setIsLoading] = useState(false);
-            const [error, setError] = useState(null);
+            const handleFileChange = (e) => {
+                const selectedFile = e.target.files[0];
+                if (selectedFile) {
+                    setFile(selectedFile);
+                    setImagePreview(URL.createObjectURL(selectedFile));
+                    setResult(null);
+                }
+            };
 
-            const handleFileChange = async (e) => {
-                const file = e.target.files[0];
-                if (file) {
-                    setIsLoading(true);
-                    setError(null);
-                    setAnalysis(null);
-                    
-                    setImageFileUrl(URL.createObjectURL(file));
-                    
-                    try {
-                        const base64 = await fileToBase64(file);
-                        setBase64Image(base64);
-                        
-                        // Call the real Gemini API for identification
-                        const result = await identifyPlant(base64);
-                        
-                        setAnalysis({
-                            image: URL.createObjectURL(file),
-                            name: result.name,
-                            confidence: result.confidence,
-                            analysis: result.analysis,
-                            funFact: result.funFact
+            const handleIdentify = async () => {
+                if (!file) return;
+
+                setIsIdentifying(true);
+                setMessage('Uploading and identifying plant...');
+                try {
+                    const base64Image = await fileToBase64(file);
+                    const identificationResult = await identifyPlant(base64Image);
+                    setResult(identificationResult);
+
+                    // Add to collection upon successful identification
+                    if (identificationResult.name !== "Identification Failed") {
+                        const saveResponse = await addPlantToCollection({ 
+                            name: identificationResult.name, 
+                            commonName: identificationResult.name.split('(')[0].trim(),
+                            analysis: identificationResult.analysis,
+                            imageUrl: imagePreview, // Use local URL for display, or a cloud upload URL in a real app
+                            confidence: identificationResult.confidence 
                         });
-
-                    } catch(e) {
-                        setError("Failed to process image or connect to the identifier.");
-                        console.error(e);
-                        setAnalysis(null);
-                    } finally {
-                        setIsLoading(false);
+                        
+                        // Update score for a successful collection (e.g., 10 points)
+                        if (saveResponse.success) {
+                             await updateScore(10);
+                             setMessage(`Identified! ${saveResponse.message}`);
+                        } else {
+                            setMessage(`Identified! (Local save only. ${saveResponse.message})`);
+                        }
+                    } else {
+                        setMessage("Identification failed. Please try again.");
                     }
+
+                } catch (error) {
+                    console.error("Identification process error:", error);
+                    setMessage("An error occurred during identification.");
+                } finally {
+                    setIsIdentifying(false);
+                    setFile(null);
+                    setImagePreview(null);
                 }
             };
 
-            const handleAddToCollectibles = () => {
-                if (!analysis || !db || !userId) return;
-
-                addCollectible({
-                    name: analysis.name,
-                    description: analysis.analysis,
-                    dateIdentified: new Date().toISOString(),
-                    imageUrl: analysis.image
-                });
-
-                setAnalysis(null);
-                setImageFileUrl(null);
-                setBase64Image(null);
-                document.getElementById('file-input').value = '';
-                console.log('Plant added to your collectibles!');
-                setCurrentPage('collectibles'); // Navigate to collectibles to show success
-            };
-
-            const handleRetry = () => {
-                setAnalysis(null);
-                setImageFileUrl(null);
-                setBase64Image(null);
-                document.getElementById('file-input').value = '';
-            };
+            const StatusBlock = ({ name, value, colorClass }) => (
+                <div className={`p-3 rounded-lg flex items-center justify-between ${colorClass} shadow-md`}>
+                    <span className="text-sm font-medium text-white">{name}</span>
+                    <span className="text-xl font-bold text-white">{value}</span>
+                </div>
+            );
 
             return (
-                <div className="p-5" style={{ backgroundColor: COLORS.SAND }}>
-                    <h2 className="text-3xl font-bold mb-6" style={{ color: COLORS.DARK_GREEN }}>Identify Nature's Secret</h2>
+                <div className="p-4 space-y-4">
+                    <h2 className="text-2xl font-bold" style={{ color: COLORS.DARK_GREEN }}>Plant Identifier</h2>
                     
-                    {!analysis && !isLoading && (
-                        <div className="bg-white p-6 rounded-xl shadow-lg border-4 border-dashed flex flex-col items-center justify-center h-64" style={{ borderColor: COLORS.FOREST_GREEN + '60' }}>
-                            <input
-                                type="file"
-                                id="file-input"
-                                accept="image/*"
-                                onChange={handleFileChange}
-                                className="hidden"
-                            />
-                            <label htmlFor="file-input" className="p-4 rounded-full shadow-lg cursor-pointer transition duration-150" style={{ backgroundColor: COLORS.FOREST_GREEN, color: COLORS.SAND, hover: { backgroundColor: COLORS.DARK_GREEN } }}>
-                                <CameraIcon className="w-8 h-8" />
-                            </label>
-                            <p className="mt-4 font-medium" style={{ color: COLORS.DARK_GREEN }}>Tap to take or upload a picture</p>
-                        </div>
-                    )}
+                    <div className="bg-white p-4 rounded-xl shadow-lg border border-gray-200">
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                            Capture or Select Image
+                        </label>
+                        <input
+                            type="file"
+                            accept="image/*"
+                            onChange={handleFileChange}
+                            className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-green-50 file:text-green-700 hover:file:bg-green-100"
+                        />
+                    </div>
 
-                    {isLoading && (
-                        <div className="flex flex-col items-center justify-center h-64 bg-gray-50 rounded-xl shadow-lg">
-                            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-green-500"></div>
-                            <p className="mt-4 font-medium" style={{ color: COLORS.FOREST_GREEN }}>Analyzing image...</p>
-                        </div>
-                    )}
-
-                    {analysis && (
-                        <div className="bg-white p-4 rounded-xl shadow-lg border border-green-100">
-                            <div className="relative mb-4">
-                                <img src={analysis.image} alt="Identified Plant" className="w-full h-48 object-cover rounded-xl border border-gray-200" />
-                                <button
-                                    onClick={handleRetry} 
-                                    className="absolute top-2 right-2 p-2 bg-white/80 text-gray-800 rounded-full shadow-lg hover:bg-white transition"
-                                >
-                                    <CrossIcon className="w-5 h-5" />
-                                </button>
-                            </div>
+                    {imagePreview && (
+                        <div className="relative bg-white p-4 rounded-xl shadow-lg border border-gray-200">
+                            <img src={imagePreview} alt="Plant Preview" className="w-full h-48 object-cover rounded-lg mb-4 shadow-inner" />
                             
-                            <h3 className="text-xl font-bold mb-3" style={{ color: COLORS.FOREST_GREEN }}>Top Identification</h3>
-                            
-                            <div className="p-3 bg-gray-50 rounded-lg shadow-inner mb-2 border-l-4 border-green-300">
-                                <p className="font-semibold text-gray-800">
-                                    {analysis.name} <span className="text-xs ml-2" style={{ color: COLORS.FOREST_GREEN }}>({analysis.confidence} Match)</span>
-                                </p>
-                                <p className="text-sm text-gray-600 mt-1">{analysis.analysis}</p>
-                            </div>
-
-                            <div className="mt-4 p-3 rounded-lg border-l-4 border-yellow-400" style={{ backgroundColor: '#FFFBEB' }}>
-                                <p className="font-semibold text-sm text-yellow-700">Fun Fact:</p>
-                                <p className="text-sm text-yellow-800">{analysis.funFact}</p>
-                            </div>
-
-                            <div className="flex justify-between mt-6 space-x-3">
-                                <button
-                                    onClick={handleRetry}
-                                    className="flex-1 px-4 py-3 bg-gray-200 text-gray-700 font-semibold rounded-xl hover:bg-gray-300 transition duration-150"
-                                >
-                                    Retry
-                                </button>
-                                {analysis.name !== "Identification Failed" && (
-                                    <button
-                                        onClick={handleAddToCollectibles}
-                                        className="flex-1 px-4 py-3 text-white font-semibold rounded-xl shadow-md shadow-green-500/50 hover:bg-green-700 transition duration-150"
-                                        style={{ backgroundColor: COLORS.FOREST_GREEN }}
-                                    >
-                                        Add to Collectibles
-                                    </button>
-                                )}
-                            </div>
+                            <button
+                                onClick={handleIdentify}
+                                disabled={isIdentifying || !file}
+                                className={`w-full py-3 rounded-xl text-white font-bold transition duration-300 shadow-lg ${
+                                    isIdentifying ? 'bg-gray-500 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'
+                                }`}
+                            >
+                                {isIdentifying ? 'Analyzing...' : 'Identify Plant'}
+                            </button>
                         </div>
                     )}
+                    
+                    {message && <p className="text-center text-sm font-medium italic" style={{ color: isIdentifying ? COLORS.BROWN : COLORS.DARK_GREEN }}>{message}</p>}
 
-                    {error && <p className="mt-4 text-red-500 text-center">{error}</p>}
+                    {result && (
+                        <div className="bg-white p-4 rounded-xl shadow-lg border-t-4 border-green-500">
+                            <h3 className="text-xl font-extrabold mb-3" style={{ color: COLORS.FOREST_GREEN }}>{result.name}</h3>
+                            <div className="grid grid-cols-2 gap-3 mb-4">
+                                <StatusBlock name="Confidence" value={result.confidence} colorClass="bg-green-600" />
+                                <StatusBlock name="Edibility Status" value={result.analysis.includes('Non-edible') ? '⚠️ Caution' : '✅ Edible'} colorClass={result.analysis.includes('Non-edible') ? 'bg-red-500' : 'bg-green-700'} />
+                            </div>
+                            <p className="text-sm text-gray-700 mb-4 font-semibold">{result.analysis}</p>
+                            <p className="text-xs italic text-gray-500">Fun Fact: {result.funFact}</p>
+                        </div>
+                    )}
                 </div>
             );
         };
 
-        const Collectibles = ({ collectibles, deleteCollectible }) => {
-            const [selectedPlant, setSelectedPlant] = useState(null);
-            const [recipes, setRecipes] = useState(null);
-            const [isLoading, setIsLoading] = useState(false);
-            const [recipeError, setRecipeError] = useState(null);
+        const PlantDoctor = ({ diagnosePlant, fileToBase64 }) => {
+            const [file, setFile] = useState(null);
+            const [imagePreview, setImagePreview] = useState(null);
+            const [prompt, setPrompt] = useState("");
+            const [isDiagnosing, setIsDiagnosing] = useState(false);
+            const [diagnosisResult, setDiagnosisResult] = useState('');
 
-            const handleGenerateRecipes = useCallback(async (plantName) => {
-                setIsLoading(true);
-                setRecipeError(null);
-                setRecipes(null);
-                const result = await generateRecipes(plantName);
-                if (result.length > 0) {
-                    setRecipes(result);
-                } else {
-                    setRecipeError("Could not generate recipes. Try again.");
+            const handleFileChange = (e) => {
+                const selectedFile = e.target.files[0];
+                if (selectedFile) {
+                    setFile(selectedFile);
+                    setImagePreview(URL.createObjectURL(selectedFile));
+                    setDiagnosisResult('');
                 }
-                setIsLoading(false);
-            }, []);
+            };
 
-            useEffect(() => {
-                // If a plant is selected and we haven't fetched recipes for it yet
-                if (selectedPlant && !recipes) {
-                    handleGenerateRecipes(selectedPlant.name);
+            const handleDiagnose = async () => {
+                if (!file) return;
+
+                setIsDiagnosing(true);
+                setDiagnosisResult('Diagnosing plant health...');
+
+                try {
+                    const base64Image = await fileToBase64(file);
+                    const resultText = await diagnosePlant(base64Image, prompt);
+                    setDiagnosisResult(resultText);
+
+                } catch (error) {
+                    console.error("Diagnosis error:", error);
+                    setDiagnosisResult("An error occurred during diagnosis.");
+                } finally {
+                    setIsDiagnosing(false);
                 }
-            }, [selectedPlant, recipes, handleGenerateRecipes]);
-
-            if (selectedPlant) {
-                return (
-                    <div className="p-5" style={{ backgroundColor: COLORS.SAND }}>
-                        <button onClick={() => setSelectedPlant(null)} className="flex items-center text-green-600 mb-4 font-semibold">
-                            <span className="text-xl mr-2">←</span> Back to Collection
-                        </button>
-                        
-                        <h2 className="text-3xl font-bold mb-4" style={{ color: COLORS.DARK_GREEN }}>{selectedPlant.name}</h2>
-                        <img src={selectedPlant.imageUrl} alt={selectedPlant.name} className="w-full h-48 object-cover rounded-xl shadow-lg mb-4" />
-                        <p className="text-gray-600 mb-4 p-3 bg-gray-50 rounded-lg">{selectedPlant.description}</p>
-                        
-                        <h3 className="text-2xl font-bold mb-3 border-b pb-1" style={{ color: COLORS.FOREST_GREEN }}>Recipe Suggestions</h3>
-                        
-                        {isLoading && (
-                            <div className="flex items-center justify-center p-8 bg-green-50 rounded-xl">
-                                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-500 mr-3"></div>
-                                <p className="text-green-700">Generating recipes...</p>
-                            </div>
-                        )}
-
-                        {recipeError && <p className="text-red-500 text-center p-4 bg-red-50 rounded-xl">{recipeError}</p>}
-
-                        {recipes && recipes.length > 0 && (
-                            <div className="space-y-4">
-                                {recipes.map((recipe, index) => (
-                                    <div key={index} className="p-4 bg-white rounded-xl shadow border border-green-100">
-                                        <h4 className="text-lg font-bold" style={{ color: COLORS.FOREST_GREEN }}>{recipe.recipeName}</h4>
-                                        <p className="text-sm text-gray-600 mb-2">{recipe.description}</p>
-                                        <p className="font-semibold text-gray-700 mt-2">Ingredients:</p>
-                                        <ul className="list-disc list-inside text-sm text-gray-500 ml-4">
-                                            {recipe.ingredients.map((ing, i) => <li key={i}>{ing}</li>)}
-                                        </ul>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-                );
-            }
+            };
 
             return (
-                <div className="p-5" style={{ backgroundColor: COLORS.SAND }}>
-                    <h2 className="text-3xl font-bold mb-6" style={{ color: COLORS.DARK_GREEN }}>My Collection ({collectibles.length})</h2>
+                <div className="p-4 space-y-4">
+                    <h2 className="text-2xl font-bold" style={{ color: COLORS.DARK_GREEN }}>Plant Doctor</h2>
+                    <p className="text-sm text-gray-600">Upload a picture of your ailing plant for a diagnosis and care plan from the Rootsage AI.</p>
                     
-                    {collectibles.length === 0 ? (
-                        <div className="text-center p-10 bg-gray-50 rounded-xl shadow-inner">
-                            <LeafIcon className="w-12 h-12 mx-auto text-green-400" />
-                            <p className="mt-4 text-gray-500">No plants identified yet. Get started on the Identify tab!</p>
+                    <div className="bg-white p-4 rounded-xl shadow-lg border border-gray-200 space-y-3">
+                         <label className="block text-sm font-medium text-gray-700">
+                            Capture or Select Image of Ailing Plant
+                        </label>
+                        <input
+                            type="file"
+                            accept="image/*"
+                            onChange={handleFileChange}
+                            className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-brown-50 file:text-brown-700 hover:file:bg-brown-100"
+                            style={{'--tw-bg-opacity': 1, 'backgroundColor': COLORS.SAND, 'color': COLORS.BROWN }}
+                        />
+                        {imagePreview && (
+                            <img src={imagePreview} alt="Ailing Plant Preview" className="w-full h-40 object-contain rounded-lg shadow-inner mt-2" />
+                        )}
+                    </div>
+
+                    <div className="bg-white p-4 rounded-xl shadow-lg border border-gray-200">
+                        <label htmlFor="prompt" className="block text-sm font-medium text-gray-700">
+                            Describe the symptoms (optional)
+                        </label>
+                        <textarea
+                            id="prompt"
+                            rows="2"
+                            value={prompt}
+                            onChange={(e) => setPrompt(e.target.value)}
+                            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 sm:text-sm p-2"
+                            placeholder="e.g., 'Leaves are yellowing at the tips' or 'There are white spots on the stem.'"
+                            disabled={isDiagnosing}
+                        />
+                        <button
+                            onClick={handleDiagnose}
+                            disabled={isDiagnosing || !file}
+                            className={`mt-3 w-full py-3 rounded-xl text-white font-bold transition duration-300 shadow-md ${
+                                isDiagnosing ? 'bg-gray-500 cursor-not-allowed' : 'bg-brown-600 hover:bg-brown-700'
+                            }`}
+                            style={{ backgroundColor: isDiagnosing ? 'rgb(107 114 128)' : COLORS.BROWN }}
+                        >
+                            {isDiagnosing ? 'Running Diagnosis...' : 'Get Diagnosis'}
+                        </button>
+                    </div>
+
+                    {diagnosisResult && (
+                        <div className="bg-white p-4 rounded-xl shadow-lg border-t-4 border-brown-500 whitespace-pre-wrap">
+                            <h3 className="text-xl font-extrabold mb-3" style={{ color: COLORS.BROWN }}>Diagnosis & Care Plan</h3>
+                            <p className="text-sm text-gray-700">{diagnosisResult}</p>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const Collectibles = ({ collections, updateScore }) => {
+            const handleCollect = () => {
+                // Mock function for demonstrating updateScore. In a real app, this would be part of identification.
+                updateScore(5);
+            };
+
+            return (
+                <div className="p-4 space-y-4">
+                    <h2 className="text-2xl font-bold" style={{ color: COLORS.DARK_GREEN }}>My Collectibles ({collections.length})</h2>
+                    <p className="text-sm text-gray-600">Plants you have successfully identified and saved to your journal.</p>
+
+                    {collections.length === 0 ? (
+                        <div className="text-center p-6 bg-white rounded-xl shadow-lg">
+                            <LeafIcon className="w-12 h-12 mx-auto text-gray-400" />
+                            <p className="mt-3 text-lg font-semibold text-gray-600">No plants collected yet!</p>
+                            <p className="text-sm text-gray-500">Head to the Identify tab to start your collection.</p>
                         </div>
                     ) : (
                         <div className="grid grid-cols-2 gap-4">
-                            {collectibles.map((plant) => (
-                                <div
-                                    key={plant.id}
-                                    onClick={() => setSelectedPlant(plant)}
-                                    className="bg-white rounded-xl shadow-lg overflow-hidden cursor-pointer hover:shadow-xl transition duration-200 border border-gray-100"
-                                >
-                                    <img src={plant.imageUrl} alt={plant.name} className="w-full h-32 object-cover" />
+                            {collections.map((plant, index) => (
+                                <div key={index} className="bg-white rounded-xl shadow-lg overflow-hidden border border-gray-200">
+                                    <img src={plant.imageUrl || "https://placehold.co/100x100/34D399/ffffff?text=P"} alt={plant.name} className="w-full h-24 object-cover" />
                                     <div className="p-3">
-                                        <p className="font-semibold text-sm text-gray-800 truncate">{plant.name}</p>
-                                        <p className="text-xs text-gray-400 mt-1">Found: {new Date(plant.dateIdentified).toLocaleDateString()}</p>
+                                        <p className="text-sm font-bold truncate" style={{ color: COLORS.DARK_GREEN }}>{plant.name.split('(')[0].trim()}</p>
+                                        <p className="text-xs italic text-gray-500 truncate">{plant.name.includes('(') ? plant.name.match(/\(([^)]+)\)/)[1] : 'Unknown species'}</p>
+                                        <div className="mt-2 flex items-center justify-between">
+                                            <span className="text-xs font-semibold px-2 py-0.5 rounded-full text-white" style={{ backgroundColor: COLORS.FOREST_GREEN }}>
+                                                {plant.confidence}
+                                            </span>
+                                            <span className="text-xs text-gray-500">{new Date(plant.collectedAt?.seconds * 1000).toLocaleDateString()}</span>
+                                        </div>
                                     </div>
                                 </div>
                             ))}
@@ -661,512 +867,310 @@
             );
         };
 
-        const PlantDoctor = () => {
-            const [imageFile, setImageFile] = useState(null);
-            const [base64Image, setBase64Image] = useState(null);
-            const [prompt, setPrompt] = useState('');
-            const [diagnosis, setDiagnosis] = useState(null);
-            const [isLoading, setIsLoading] = useState(false);
-            const [error, setError] = useState(null);
+        const Journal = ({ collections, generateRecipes }) => {
+            const [selectedPlant, setSelectedPlant] = useState(null);
+            const [recipes, setRecipes] = useState(null);
+            const [isGenerating, setIsGenerating] = useState(false);
 
-            const handleFileChange = async (e) => {
-                const file = e.target.files[0];
-                if (file) {
-                    setImageFile(URL.createObjectURL(file));
-                    const base64 = await fileToBase64(file);
-                    setBase64Image(base64);
+            const handlePlantSelect = async (plant) => {
+                setSelectedPlant(plant);
+                setRecipes(null);
+                setIsGenerating(true);
+                
+                try {
+                    const plantName = plant.name.split('(')[0].trim();
+                    const generatedRecipes = await generateRecipes(plantName);
+                    setRecipes(generatedRecipes);
+                } catch (error) {
+                    console.error("Recipe generation failed:", error);
+                    setRecipes([]);
+                } finally {
+                    setIsGenerating(false);
                 }
             };
 
-            const handleDiagnose = async () => {
-                if (!base64Image) {
-                    setError("Please upload a plant image first.");
-                    return;
-                }
+            const PlantDetailModal = () => {
+                if (!selectedPlant) return null;
+                const commonName = selectedPlant.name.split('(')[0].trim();
+                const scientificName = selectedPlant.name.includes('(') ? selectedPlant.name.match(/\(([^)]+)\)/)[1] : 'Scientific name unknown';
 
-                setIsLoading(true);
-                setError(null);
-                setDiagnosis(null);
-                const result = await diagnosePlant(base64Image, prompt);
-                setDiagnosis(result);
-                setIsLoading(false);
+                return (
+                    <div className="fixed inset-0 bg-black bg-opacity-50 z-20 flex justify-center items-center p-4">
+                        <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto shadow-2xl">
+                            <div className="relative">
+                                <img src={selectedPlant.imageUrl} alt={commonName} className="w-full h-48 object-cover rounded-t-2xl" />
+                                <button onClick={() => setSelectedPlant(null)} className="absolute top-3 right-3 p-2 bg-white rounded-full shadow-lg text-gray-600 hover:text-gray-900">
+                                    <CrossIcon className="w-5 h-5" />
+                                </button>
+                            </div>
+                            
+                            <div className="p-5">
+                                <h3 className="text-2xl font-extrabold mb-1" style={{ color: COLORS.DARK_GREEN }}>{commonName}</h3>
+                                <p className="text-sm italic mb-4 text-gray-500">{scientificName}</p>
+
+                                <div className="p-3 mb-4 rounded-xl shadow-inner border" style={{ borderColor: COLORS.SAND }}>
+                                    <p className="text-sm font-semibold mb-1" style={{ color: COLORS.BROWN }}>Identification Analysis:</p>
+                                    <p className="text-sm text-gray-700">{selectedPlant.analysis}</p>
+                                </div>
+                                
+                                <h4 className="text-xl font-bold mb-3" style={{ color: COLORS.FOREST_GREEN }}>Recipes</h4>
+
+                                {isGenerating && <p className="text-center text-sm italic text-gray-500">Generating 3 recipes with Gemini AI...</p>}
+                                
+                                {!isGenerating && recipes && recipes.length > 0 && (
+                                    <div className="space-y-4">
+                                        {recipes.map((recipe, index) => (
+                                            <div key={index} className="border-l-4 p-3 rounded-lg shadow-md" style={{ borderColor: COLORS.FOREST_GREEN, backgroundColor: '#f0fdf4' }}>
+                                                <p className="font-bold text-base mb-1" style={{ color: COLORS.DARK_GREEN }}>{recipe.recipeName}</p>
+                                                <p className="text-xs italic text-gray-600 mb-2">{recipe.description}</p>
+                                                <ul className="list-disc pl-5 text-xs text-gray-700">
+                                                    {recipe.ingredients.map((ing, i) => <li key={i}>{ing}</li>)}
+                                                </ul>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                                {!isGenerating && recipes && recipes.length === 0 && (
+                                    <p className="text-center text-red-500 text-sm">Could not generate recipes for this plant.</p>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                );
             };
 
             return (
-                <div className="p-5" style={{ backgroundColor: COLORS.SAND }}>
-                    <h2 className="text-3xl font-bold text-red-700 mb-6">Rootsage Plant Doctor</h2>
-                    <p className="text-gray-600 mb-4">Upload an image of your sick plant for a diagnosis and care advice.</p>
-                    
-                    <div className="bg-white p-4 rounded-xl shadow-lg">
-                        {!imageFile ? (
-                            <div className="border-4 border-dashed border-red-300 flex flex-col items-center justify-center h-48 rounded-xl">
-                                <input
-                                    type="file"
-                                    id="doctor-file-input"
-                                    accept="image/*"
-                                    onChange={handleFileChange}
-                                    className="hidden"
-                                />
-                                <label htmlFor="doctor-file-input" className="p-3 bg-red-600 text-white rounded-full shadow-lg cursor-pointer hover:bg-red-700 transition duration-150">
-                                    <CameraIcon className="w-6 h-6" />
-                                </label>
-                                <p className="mt-2 text-gray-600 text-sm">Upload Photo</p>
+                <div className="p-4 space-y-4">
+                    <h2 className="text-2xl font-bold" style={{ color: COLORS.DARK_GREEN }}>Forager's Journal</h2>
+                    <p className="text-sm text-gray-600">Tap a plant to view its analysis and generate AI-powered recipes.</p>
+
+                    <div className="space-y-3">
+                        {collections.length === 0 ? (
+                            <div className="text-center p-6 bg-white rounded-xl shadow-lg">
+                                <BookIcon className="w-12 h-12 mx-auto text-gray-400" />
+                                <p className="mt-3 text-lg font-semibold text-gray-600">Journal is Empty</p>
+                                <p className="text-sm text-gray-500">Start collecting plants to fill your journal.</p>
                             </div>
                         ) : (
-                            <img src={imageFile} alt="Plant for Diagnosis" className="w-full h-48 object-cover rounded-xl border border-gray-200 mb-4" />
-                        )}
-
-                        <textarea
-                            value={prompt}
-                            onChange={(e) => setPrompt(e.target.value)}
-                            placeholder="e.g., 'What is wrong with its yellow leaves?'"
-                            rows="3"
-                            className="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500 mt-4"
-                        />
-
-                        <button
-                            onClick={handleDiagnose}
-                            disabled={isLoading || !base64Image}
-                            className={`w-full px-4 py-3 mt-4 font-semibold rounded-xl transition duration-150 ${
-                                isLoading || !base64Image
-                                    ? 'bg-red-300 cursor-not-allowed'
-                                    : 'bg-red-600 text-white shadow-md shadow-red-500/50 hover:bg-red-700'
-                            }`}
-                        >
-                            {isLoading ? 'Diagnosing...' : 'Get Diagnosis'}
-                        </button>
-                    </div>
-
-                    {error && <p className="mt-4 text-red-500 text-center">{error}</p>}
-
-                    {diagnosis && (
-                        <div className="mt-6 p-4 bg-white rounded-xl shadow-lg border-l-4 border-red-500">
-                            <h3 className="text-xl font-bold text-red-700 mb-2">Doctor's Report</h3>
-                            <div className="prose text-gray-700 text-sm" dangerouslySetInnerHTML={{ __html: diagnosis.replace(/\n/g, '<br>') }} />
-                        </div>
-                    )}
-                </div>
-            );
-        };
-
-        const Quests = ({ collectibles }) => {
-            
-            // Function to check if the user has collected the required item for a quest (case-insensitive check)
-            const isQuestCollected = (requiredCollectible) => {
-                if (!requiredCollectible) return false;
-                const required = requiredCollectible.toLowerCase();
-                return collectibles.some(c => c.name.toLowerCase().includes(required));
-            };
-            
-            // Function to check if a specific number of unique items of a category are collected
-            const isCategoryQuestCompleted = (category, count) => {
-                if (category === 'Fungi') {
-                    // MOCK LOGIC for Fungi count: checks if at least 10 unique items have 'mushroom' or 'fungi' in their name
-                    const fungiCount = collectibles.filter(c => 
-                        c.name.toLowerCase().includes('mushroom') || 
-                        c.name.toLowerCase().includes('fungi')
-                    ).length;
-                    return fungiCount >= count;
-                }
-                return false;
-            };
-
-
-            const allQuests = MOCK_SEASONAL_QUESTS.map(quest => {
-                let status = quest.status;
-                let badgeEarned = false;
-
-                // Handle Year-Round Quest for 10 Fungi
-                if (quest.id === 'q4') {
-                    if (isCategoryQuestCompleted('Fungi', 10)) {
-                         status = 'Completed';
-                         badgeEarned = true;
-                    }
-                } 
-                // Handle Seasonal Quests (check for required collectible)
-                else if (quest.requiredCollectible) {
-                    if (isQuestCollected(quest.requiredCollectible)) {
-                        status = 'Completed';
-                        badgeEarned = true;
-                    }
-                }
-
-                return { ...quest, status, badgeEarned };
-            });
-
-            const QuestCard = ({ quest }) => (
-                <div className="bg-white p-4 rounded-xl shadow-md border-l-4 flex flex-col" 
-                    style={{ borderColor: quest.badgeEarned ? COLORS.FOREST_GREEN : (quest.caution ? 'rgb(251 191 36)' : 'rgb(209 213 219)') }}
-                >
-                    <div className="flex justify-between items-start mb-2">
-                        <h4 className="font-bold text-lg" style={{ color: COLORS.DARK_GREEN }}>
-                            {quest.name}
-                        </h4>
-                        {quest.badgeEarned && <span className="text-3xl ml-3" title="Badge Earned">{quest.badge}</span>}
-                    </div>
-                    
-                    <div className="flex justify-between items-center text-sm">
-                        <span className={`px-2 py-1 rounded-full text-xs font-semibold ${
-                            quest.status === 'Completed' ? 'bg-green-100 text-green-700' : 
-                            quest.caution ? 'bg-yellow-100 text-yellow-700' : 'bg-gray-100 text-gray-700'
-                        }`}>
-                            {quest.status} {quest.caution && '(High Caution)'}
-                        </span>
-                        {!quest.badgeEarned && quest.status !== 'Locked' && <span className="text-gray-500 italic">Collect: {quest.requiredCollectible}</span>}
-                    </div>
-                </div>
-            );
-
-            return (
-                <div className="p-5" style={{ backgroundColor: COLORS.SAND }}>
-                    <h2 className="text-3xl font-bold mb-6" style={{ color: COLORS.DARK_GREEN }}>Seasonal Quests</h2>
-                    <p className="text-gray-700 mb-6">Complete foraging challenges to earn unique badges and master the art of ethical harvesting.</p>
-
-                    <div className="space-y-4">
-                        {allQuests.map(quest => (
-                            <QuestCard key={quest.id} quest={quest} />
-                        ))}
-                    </div>
-
-                    <h3 className="text-xl font-bold mt-8 mb-4 border-b pb-1" style={{ color: COLORS.FOREST_GREEN }}>My Badges</h3>
-                    <div className="flex flex-wrap gap-3">
-                        {allQuests.filter(q => q.badgeEarned).length === 0 ? (
-                            <p className="text-gray-500 italic">No badges earned yet. Complete a quest!</p>
-                        ) : (
-                            allQuests.filter(q => q.badgeEarned).map(q => (
-                                <div key={q.id} className="text-center p-3 rounded-xl shadow-lg bg-white border border-gray-100">
-                                    <span className="text-3xl block">{q.badge}</span>
-                                    <p className="text-xs text-gray-600 mt-1">{q.name.split(':')[1] || 'Badge'}</p>
+                            collections.map((plant, index) => (
+                                <div
+                                    key={index}
+                                    onClick={() => handlePlantSelect(plant)}
+                                    className="flex items-center bg-white p-3 rounded-xl shadow-md border-l-4 cursor-pointer hover:shadow-lg transition duration-200"
+                                    style={{ borderColor: COLORS.FOREST_GREEN }}
+                                >
+                                    <img src={plant.imageUrl || "https://placehold.co/100x100/34D399/ffffff?text=P"} alt={plant.name} className="w-16 h-16 object-cover rounded-lg mr-4" />
+                                    <div className="flex-grow">
+                                        <p className="text-base font-bold truncate" style={{ color: COLORS.DARK_GREEN }}>{plant.name.split('(')[0].trim()}</p>
+                                        <p className="text-xs italic text-gray-500 truncate">{plant.name.includes('(') ? plant.name.match(/\(([^)]+)\)/)[1] : 'Unknown species'}</p>
+                                        <span className="text-xs text-gray-500">Collected: {new Date(plant.collectedAt?.seconds * 1000).toLocaleDateString()}</span>
+                                    </div>
+                                    <button className="text-green-600 p-2 ml-2 hover:bg-green-50 rounded-full">
+                                        <BookIcon className="w-5 h-5" />
+                                    </button>
                                 </div>
                             ))
                         )}
                     </div>
+                    <PlantDetailModal />
                 </div>
             );
         };
 
-        const Profile = ({ profile, userId, badge }) => {
-            const [newBio, setNewBio] = useState(profile.bio);
-            const [isEditing, setIsEditing] = useState(false);
-
-            useEffect(() => {
-                setNewBio(profile.bio);
-            }, [profile.bio]);
-
-            const handleSave = () => {
-                // Note: In a full app, this would trigger an updateDoc call to Firebase
-                console.log("Saving new bio:", newBio);
-                // For this example, we mock the save action
-                profile.bio = newBio;
-                setIsEditing(false);
-            };
-
-            return (
-                <div className="p-5" style={{ backgroundColor: COLORS.SAND }}>
-                    <h2 className="text-3xl font-bold mb-6" style={{ color: COLORS.DARK_GREEN }}>My Rootsage Profile</h2>
-                    <p className="text-xs text-gray-400 mb-4 break-all">User ID: {userId || "Authenticating..."}</p>
-
-                    <div className="bg-white p-6 rounded-xl shadow-lg flex flex-col items-center">
-                        <img
-                            src={profile.profilePicUrl}
-                            alt="Profile"
-                            className="w-24 h-24 rounded-full object-cover border-4 mb-4"
-                            style={{ borderColor: COLORS.FOREST_GREEN }}
-                        />
-                        
-                        <h3 className="text-xl font-bold text-gray-800 mb-2">My Bio</h3>
-                        
-                        {isEditing ? (
-                            <>
-                                <textarea
-                                    value={newBio}
-                                    onChange={(e) => setNewBio(e.target.value)}
-                                    className="w-full p-2 border border-gray-300 rounded-lg text-sm"
-                                    rows="3"
-                                />
-                                <button onClick={handleSave} className="mt-3 px-4 py-2 text-white font-semibold rounded-xl hover:bg-green-600 transition" style={{ backgroundColor: COLORS.FOREST_GREEN }}>
-                                    Save Bio
-                                </button>
-                            </>
-                        ) : (
-                            <>
-                                <p className="text-gray-600 text-center mb-4 italic">"{profile.bio}"</p>
-                                <button onClick={() => setIsEditing(true)} className="text-sm text-green-600 hover:text-green-700 font-medium">
-                                    Edit Bio
-                                </button>
-                            </>
-                        )}
-                    </div>
-
-                    <div className={`mt-6 p-5 rounded-xl shadow-lg text-white text-center ${badge.color}`}>
-                        <p className="text-2xl font-extrabold">{badge.icon} {badge.name}</p>
-                        <p className="text-sm mt-1">Identified {profile.collectibleCount} plants.</p>
-                        {badge.name !== "Master Botanist" && (
-                             <p className="text-xs mt-2">Identify {badge.nextTier - profile.collectibleCount} more to reach the next tier!</p>
-                        )}
-                    </div>
-                </div>
-            );
-        };
-
-        const Journal = ({ journalEntries, addJournalEntry, deleteJournalEntry }) => {
-            const [newEntry, setNewEntry] = useState('');
-            const [error, setError] = useState('');
-
-            const handleAdd = () => {
-                if (newEntry.trim() === '') {
-                    setError('Journal entry cannot be empty.');
-                    return;
+        const Quests = ({ collections }) => {
+            const getQuestStatus = (quest) => {
+                if (quest.status === 'Locked') return 'Locked';
+                const count = collections.filter(c => c.name.includes(quest.requiredCollectible)).length;
+                if (quest.id === 'q4') { // Year-Round: Identify 10 Fungi
+                    const fungiCount = collections.filter(c => c.name.toLowerCase().includes('fungi') || c.name.toLowerCase().includes('mushroom')).length;
+                    if (fungiCount >= 10) return 'Completed';
                 }
-                addJournalEntry(newEntry);
-                setNewEntry('');
-                setError('');
+                
+                // Simple check for existence of required collectible
+                if (collections.some(c => c.name.includes(quest.requiredCollectible))) {
+                    return 'Completed';
+                }
+
+                return 'In Progress';
             };
 
-            const JournalCard = ({ entry }) => (
-                <div className="bg-white p-4 rounded-xl shadow-md flex justify-between items-start border-l-4 border-green-500">
-                    <div className="flex-1">
-                        <p className="text-sm text-gray-800 font-medium">{entry.text}</p>
-                        <p className="text-xs text-gray-400 mt-1">
-                            {new Date(entry.timestamp).toLocaleDateString()}
-                        </p>
-                    </div>
-                    <button
-                        onClick={() => deleteJournalEntry(entry.id)}
-                        className="ml-4 p-1 text-red-400 hover:text-red-600 transition"
-                    >
-                        <CrossIcon className="w-4 h-4" />
-                    </button>
-                </div>
-            );
+            const getProgressText = (quest) => {
+                if (quest.status === 'Locked') return 'Requires completing previous seasonal quest.';
+                if (quest.id === 'q4') {
+                    const fungiCount = collections.filter(c => c.name.toLowerCase().includes('fungi') || c.name.toLowerCase().includes('mushroom')).length;
+                    return `Progress: ${fungiCount}/10 Fungi Identified`;
+                }
+                if (getQuestStatus(quest) === 'Completed') return 'Quest Complete!';
+                return `Required: Find ${quest.requiredCollectible}`;
+            };
+
+            const getStatusColor = (status) => {
+                switch (status) {
+                    case 'Completed': return 'bg-green-500';
+                    case 'In Progress': return 'bg-yellow-500';
+                    case 'Locked': return 'bg-gray-400';
+                    default: return 'bg-gray-200';
+                }
+            };
 
             return (
-                <div className="p-5" style={{ backgroundColor: COLORS.SAND }}>
-                    <h2 className="text-3xl font-bold mb-6" style={{ color: COLORS.DARK_GREEN }}>Green Thumb Journal</h2>
-                    <div className="bg-white p-4 rounded-xl shadow-inner mb-6">
-                        <h3 className="text-lg font-semibold text-gray-700 mb-2">New Initiative</h3>
-                        <textarea
-                            value={newEntry}
-                            onChange={(e) => setNewEntry(e.target.value)}
-                            placeholder="e.g., 'Started composting for my tomato plants.'"
-                            rows="3"
-                            className="w-full p-2 border border-gray-300 rounded-lg focus:ring-green-500 focus:border-green-500 text-sm"
-                        />
-                        {error && <p className="text-red-500 text-xs mt-1">{error}</p>}
-                        <button
-                            onClick={handleAdd}
-                            className="w-full mt-3 px-4 py-2 text-white font-semibold rounded-xl shadow-md hover:bg-green-700 transition"
-                            style={{ backgroundColor: COLORS.FOREST_GREEN }}
-                        >
-                            <PlusIcon className="w-4 h-4 inline mr-1" /> Add Entry
-                        </button>
-                    </div>
+                <div className="p-4 space-y-4">
+                    <h2 className="text-2xl font-bold" style={{ color: COLORS.DARK_GREEN }}>Seasonal Quests</h2>
+                    <p className="text-sm text-gray-600">Complete these challenges to earn rare badges and boost your score!</p>
 
-                    <h3 className="text-xl font-bold text-gray-700 mb-3 border-b pb-1">Past Initiatives</h3>
-                    <div className="space-y-3">
-                        {journalEntries.length === 0 ? (
-                            <p className="text-gray-500 italic text-center p-4">No journal entries yet.</p>
-                        ) : (
-                            journalEntries
-                                .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-                                .map((entry) => <JournalCard key={entry.id} entry={entry} />)
-                        )}
+                    <div className="space-y-4">
+                        {MOCK_SEASONAL_QUESTS.map((quest) => {
+                            const status = getQuestStatus(quest);
+                            const progressText = getProgressText(quest);
+                            return (
+                                <div key={quest.id} className="bg-white p-4 rounded-xl shadow-lg border border-gray-200">
+                                    <div className="flex items-center justify-between mb-2">
+                                        <div className="flex items-center">
+                                            <span className="text-2xl mr-3">{quest.badge}</span>
+                                            <div>
+                                                <p className="font-bold" style={{ color: COLORS.DARK_GREEN }}>{quest.name}</p>
+                                                {quest.caution && <span className="text-xs font-semibold text-red-500">⚠️ Caution Required</span>}
+                                            </div>
+                                        </div>
+                                        <span className={`px-3 py-1 text-xs font-semibold rounded-full text-white ${getStatusColor(status)}`}>
+                                            {status}
+                                        </span>
+                                    </div>
+                                    <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2">
+                                        <div
+                                            className={`h-1.5 rounded-full ${status === 'Completed' ? 'bg-green-500' : status === 'In Progress' ? 'bg-yellow-500' : 'bg-gray-400'}`}
+                                            style={{ width: status === 'Completed' ? '100%' : '50%' }}
+                                        ></div>
+                                    </div>
+                                    <p className="text-xs text-gray-500 mt-2">{progressText}</p>
+                                </div>
+                            );
+                        })}
                     </div>
                 </div>
             );
         };
+        
+        const Profile = ({ userData, collections, signOutUser, signInWithGoogle, user }) => {
+            const tier = getBadgeTier(collections.length);
+            const nextTierText = tier.nextTier > collections.length ? `Collect ${tier.nextTier - collections.length} more to reach the next tier!` : 'You have reached the highest tier!';
 
+            const AuthBlock = () => (
+                <div className="mt-4 p-4 bg-white rounded-xl shadow-lg border border-gray-200">
+                    <h3 className="text-lg font-bold mb-3" style={{ color: COLORS.DARK_GREEN }}>Account</h3>
+                    {user ? (
+                        <div className="space-y-2">
+                            <p className="text-sm text-gray-700">Signed in as: <span className="font-semibold">{user.email || userData.displayName}</span></p>
+                            <button
+                                onClick={signOutUser}
+                                className="w-full py-2 rounded-xl text-white font-bold bg-red-500 hover:bg-red-600 transition duration-200 flex items-center justify-center"
+                            >
+                                <LoginIcon className="w-5 h-5 rotate-180 mr-2" /> Sign Out
+                            </button>
+                        </div>
+                    ) : (
+                        <div className="space-y-2">
+                             <p className="text-sm text-gray-700">Sign in to save your progress permanently.</p>
+                            <button
+                                onClick={signInWithGoogle}
+                                className="w-full py-2 rounded-xl text-white font-bold bg-blue-500 hover:bg-blue-600 transition duration-200 flex items-center justify-center"
+                            >
+                                <LoginIcon className="w-5 h-5 mr-2" /> Sign In with Google
+                            </button>
+                            <p className="text-xs text-center text-gray-500">Currently using anonymous/guest profile.</p>
+                        </div>
+                    )}
+                </div>
+            );
+
+            return (
+                <div className="p-4 space-y-4">
+                    <h2 className="text-2xl font-bold" style={{ color: COLORS.DARK_GREEN }}>My Foraging Profile</h2>
+                    
+                    {userData && (
+                        <div className="bg-white p-4 rounded-xl shadow-lg border border-gray-200 space-y-4">
+                            <div className="flex items-center space-x-4">
+                                <img src={user?.photoURL || defaultProfile.profilePicUrl} alt="Profile" className="w-20 h-20 object-cover rounded-full border-4" style={{ borderColor: COLORS.FOREST_GREEN }} />
+                                <div>
+                                    <p className="text-xl font-bold" style={{ color: COLORS.DARK_GREEN }}>{userData.displayName}</p>
+                                    <p className="text-sm text-gray-600">{userData.bio}</p>
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-3 text-center">
+                                <div className="p-3 rounded-lg shadow-inner border border-gray-100" style={{ backgroundColor: COLORS.SAND }}>
+                                    <p className="text-xs font-medium text-gray-700">Total Score</p>
+                                    <p className="text-2xl font-extrabold" style={{ color: COLORS.DARK_GREEN }}>{userData.score || 0}</p>
+                                </div>
+                                <div className="p-3 rounded-lg shadow-inner border border-gray-100" style={{ backgroundColor: COLORS.SAND }}>
+                                    <p className="text-xs font-medium text-gray-700">Plants Collected</p>
+                                    <p className="text-2xl font-extrabold" style={{ color: COLORS.DARK_GREEN }}>{collections.length}</p>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="bg-white p-4 rounded-xl shadow-lg border-l-4 border-amber-500">
+                        <h3 className="text-lg font-bold mb-2" style={{ color: COLORS.BROWN }}>{tier.icon} {tier.name}</h3>
+                        <p className="text-sm text-gray-700">{nextTierText}</p>
+                    </div>
+
+                    <AuthBlock />
+                </div>
+            );
+        };
 
         // --- Main App Component ---
-
         const App = () => {
-            const [db, setDb] = useState(null);
-            const [auth, setAuth] = useState(null);
-            const [userId, setUserId] = useState(null);
-            const [isAuthReady, setIsAuthReady] = useState(false);
-            const [isPreloaderFinished, setIsPreloaderFinished] = useState(false);
-            const [hasAgreed, setHasAgreed] = useState(false);
+            // New Firebase Hooks from index (3).html
+            const { user, isAuthReady, dbInstance, signInWithGoogle, signOutUser, userId } = useAuth();
+            const { userData, updateScore } = useUserData(userId, dbInstance, isAuthReady);
+            const { collections, loading: collectionsLoading, addPlantToCollection } = useCollections(dbInstance, isAuthReady, userId);
+
+            // State from index (2).html
+            const [isAgreed, setIsAgreed] = useState(false);
+            const [showPreloader, setShowPreloader] = useState(true); // Visual preloader status
             const [currentPage, setCurrentPage] = useState('identify');
             
-            // Data States
-            const [collectibles, setCollectibles] = useState([]);
-            const [journalEntries, setJournalEntries] = useState([]);
-            const [profileData, setProfileData] = useState(defaultProfile);
-
-            // 1. Firebase Initialization and Authentication
+            // Effect to manage the preloader visual timeout
             useEffect(() => {
-                // Skip initialization if we haven't passed the agreement gate yet
-                if (!hasAgreed || !initializeApp) return;
+                // The BouncingLogoPreloader has its own internal timeout
+                // We'll let it run and set showPreloader to false
+            }, []); 
 
-                try {
-                    // Use the SECURE_FIREBASE_CONFIG
-                    const app = initializeApp(SECURE_FIREBASE_CONFIG);
-                    const firestore = getFirestore(app);
-                    const firebaseAuth = getAuth(app);
-                    setDb(firestore);
-                    setAuth(firebaseAuth);
+            // Wait for agreement, preloader timeout, and Firebase Auth readiness
+            if (!isAgreed) return <AgreementGate onAgree={() => setIsAgreed(true)} />;
+            if (showPreloader || !isAuthReady || !userData) {
+                // userData check ensures we have the profile data loaded or created
+                return <BouncingLogoPreloader onAnimationEnd={setShowPreloader} />;
+            }
+            
+            // Props to pass to all page components
+            const pageProps = {
+                // Firebase/Data
+                collections: collections,
+                addPlantToCollection: addPlantToCollection,
+                updateScore: updateScore,
+                userData: userData,
+                user: user,
+                signOutUser: signOutUser,
+                signInWithGoogle: signInWithGoogle,
 
-                    const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
-                        if (user) {
-                            setUserId(user.uid);
-                        } else {
-                            try {
-                                if (initialAuthToken) {
-                                    await signInWithCustomToken(firebaseAuth, initialAuthToken);
-                                } else {
-                                    await signInAnonymously(firebaseAuth);
-                                }
-                            } catch (e) {
-                                console.error("Firebase Auth Error:", e);
-                                setUserId(crypto.randomUUID());
-                            }
-                        }
-                        setIsAuthReady(true);
-                    });
-
-                    return () => unsubscribe();
-                } catch (e) {
-                    console.error("Firebase Initialization Failed:", e);
-                    setIsAuthReady(true);
-                    setUserId(crypto.randomUUID());
-                }
-            }, [hasAgreed]); // Only run after agreement
-
-            // 2. Data Subscriptions (Real-time listeners)
-            useEffect(() => {
-                if (!db || !userId || !isAuthReady) return;
-
-                const getCollectiblePath = () => `artifacts/${appId}/users/${userId}/collectibles`;
-                const getJournalPath = () => `artifacts/${appId}/users/${userId}/journal`;
-                const getProfileDoc = () => doc(db, `artifacts/${appId}/users/${userId}/profile`, 'data');
-
-                const unsubCollectibles = onSnapshot(collection(db, getCollectiblePath()), (snapshot) => {
-                    const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    setCollectibles(items);
-                }, (error) => console.error("Collectible Snapshot Error:", error));
-
-                const unsubJournal = onSnapshot(collection(db, getJournalPath()), (snapshot) => {
-                    const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    setJournalEntries(items);
-                }, (error) => console.error("Journal Snapshot Error:", error));
-
-                const unsubProfile = onSnapshot(getProfileDoc(), (docSnapshot) => {
-                    if (docSnapshot.exists()) {
-                        const data = docSnapshot.data();
-                        setProfileData(prev => ({ ...prev, ...data, collectibleCount: collectibles.length }));
-                    } else {
-                        // Create the default profile if it doesn't exist
-                        setDoc(getProfileDoc(), defaultProfile, { merge: true }).catch(e => console.error("Error creating profile:", e));
-                        setProfileData(prev => ({ ...prev, ...defaultProfile, collectibleCount: collectibles.length }));
-                    }
-                }, (error) => console.error("Profile Snapshot Error:", error));
-
-
-                return () => {
-                    unsubCollectibles();
-                    unsubJournal();
-                    unsubProfile();
-                };
-            }, [db, userId, isAuthReady, collectibles.length]);
-
-            // Update profile data with collectible count whenever collectibles change
-            useEffect(() => {
-                setProfileData(prev => ({ ...prev, collectibleCount: collectibles.length }));
-                if (db && userId) {
-                    const profileDocRef = doc(db, `artifacts/${appId}/users/${userId}/profile`, 'data');
-                    // Update only the count field
-                    updateDoc(profileDocRef, { collectibleCount: collectibles.length }).catch(e => console.error("Error updating count:", e));
-                }
-            }, [collectibles.length, db, userId]);
-
-            // --- CRUD Operations ---
-
-            const addCollectible = async (item) => {
-                if (!db || !userId) return;
-                const itemWithId = { ...item, timestamp: new Date().toISOString() };
-                const path = `artifacts/${appId}/users/${userId}/collectibles`;
-                try {
-                    await addDoc(collection(db, path), itemWithId);
-                } catch (e) {
-                    console.error("Error adding collectible: ", e);
-                }
+                // Gemini API helpers
+                generateRecipes,
+                identifyPlant,
+                diagnosePlant,
+                fileToBase64,
             };
 
-            const deleteCollectible = async (id) => {
-                if (!db || !userId) return;
-                const docRef = doc(db, `artifacts/${appId}/users/${userId}/collectibles`, id);
-                try {
-                    await deleteDoc(docRef);
-                } catch (e) {
-                    console.error("Error deleting collectible: ", e);
-                }
-            };
-
-            const addJournalEntry = async (text) => {
-                if (!db || !userId) return;
-                const item = { text, timestamp: new Date().toISOString() };
-                const path = `artifacts/${appId}/users/${userId}/journal`;
-                try {
-                    await addDoc(collection(db, path), item);
-                } catch (e) {
-                    console.error("Error adding journal entry: ", e);
-                }
-            };
-
-            const deleteJournalEntry = async (id) => {
-                if (!db || !userId) return;
-                const docRef = doc(db, `artifacts/${appId}/users/${userId}/journal`, id);
-                try {
-                    await deleteDoc(docRef);
-                } catch (e) {
-                    console.error("Error deleting journal entry: ", e);
-                }
-            };
-
-            // Badge Logic
-            const badge = useMemo(() => {
-                const count = collectibles.length;
-                const tier = getBadgeTier(count);
-                // Calculate nextTier based on the tier limits
-                tier.nextTier = tier.name === "Master Botanist" ? count : tier.name === "Green Thumb Apprentice" ? 15 : 5;
-                return tier;
-            }, [collectibles.length]);
-
-
-            // Conditional Rendering Logic
             const renderAppContent = () => {
-                // 1. Preloader Screen
-                if (!isPreloaderFinished) {
-                    return <BouncingLogoPreloader onAnimationEnd={setIsPreloaderFinished} />;
-                }
-
-                // 2. Agreement Gate (after preloader)
-                if (!hasAgreed) {
-                    return <AgreementGate onAgree={() => setHasAgreed(true)} />;
-                }
-                
-                // 3. Main App Content (after agreement and auth check)
-                if (!isAuthReady) {
-                    return (
-                        <div className="flex flex-col items-center justify-center min-h-screen text-green-700" style={{ backgroundColor: COLORS.SAND }}>
-                            <div className="animate-pulse text-2xl font-semibold">Loading User Data...</div>
-                            <p className="text-sm mt-2 text-gray-500">Securing your garden records.</p>
-                        </div>
-                    );
-                }
-                
-                const pageProps = { userId, db, collectibles, journalEntries, profile: profileData, badge, addJournalEntry, deleteJournalEntry, deleteCollectible, addCollectible, setCurrentPage };
-
                 let content;
                 switch (currentPage) {
-                    case 'identify':
-                        content = <IdentifyPlant {...pageProps} />;
+                    case 'doctor':
+                        content = <PlantDoctor {...pageProps} />;
                         break;
                     case 'collectibles':
                         content = <Collectibles {...pageProps} />;
-                        break;
-                    case 'doctor':
-                        content = <PlantDoctor {...pageProps} />;
                         break;
                     case 'journal':
                         content = <Journal {...pageProps} />;
@@ -1177,6 +1181,7 @@
                     case 'profile':
                         content = <Profile {...pageProps} />;
                         break;
+                    case 'identify':
                     default:
                         content = <IdentifyPlant {...pageProps} />;
                 }
@@ -1189,7 +1194,7 @@
                             </header>
                             <main>{content}</main>
                         </div>
-                        <NavBar currentPage={currentPage} setCurrentPage={setCurrentPage} badgeCount={collectibles.length} />
+                        <NavBar currentPage={currentPage} setCurrentPage={setCurrentPage} badgeCount={collections.length} />
                     </div>
                 );
             };
@@ -1203,4 +1208,3 @@
     </script>
 </body>
 </html>
-
