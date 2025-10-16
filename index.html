@@ -267,7 +267,7 @@
                 return () => unsubscribe();
             }, [dbInstance, isAuthReady, userId]);
 
-            const addPlantToCollection = useCallback(async (plantData) => {
+            const addPlantToCollection = useCallback(async (plantData, imageUrl) => {
                 if (!dbInstance || !userId) {
                     return { success: false, message: "Authentication required to save." };
                 }
@@ -278,6 +278,7 @@
                     const newDocRef = window.doc(userCollectionsRef);
                     await window.setDoc(newDocRef, {
                         ...plantData,
+                        imageUrl: imageUrl, // Use the first uploaded image as the collection image
                         collectedAt: window.serverTimestamp(),
                         userId: userId,
                     });
@@ -371,14 +372,20 @@
             }
         };
 
-        const identifyPlant = async (base64Image) => {
+        // UPDATED: Accepts an array of base64 images
+        const identifyPlant = async (base64Images) => {
              try {
                 checkApiKey(); // Check key before call
             } catch (error) {
                 throw new Error(error.message);
             }
+            
+            // Construct the parts array for the Gemini API call
+            const imageParts = base64Images.map((base64) => ({
+                inlineData: { mimeType: "image/png", data: base64 }
+            }));
 
-            const systemPrompt = `You are the Rootsage Identification Bot. Your task is to analyze the provided image of a plant and return the single most likely identification in a specific JSON format. Do not include any other text or explanation.
+            const systemPrompt = `You are the Rootsage Identification Bot. Your task is to analyze the provided image(s) of a plant and return the single most likely identification in a specific JSON format. Use all images provided for a comprehensive view. Do not include any other text or explanation.
 
             JSON Schema required:
             {
@@ -390,14 +397,14 @@
             
             Return ONLY the JSON object.`;
             
-            const userQuery = "Identify this plant, its edibility, caution level, and provide a fun fact.";
+            const userQuery = `Identify this plant, its edibility, caution level, and provide a fun fact. Use all ${base64Images.length} images provided for identification.`;
             
             const payload = {
                 contents: [{
                     role: "user",
                     parts: [
                         { text: userQuery },
-                        { inlineData: { mimeType: "image/png", data: base64Image } }
+                        ...imageParts
                     ]
                 }],
                 systemInstruction: { parts: [{ text: systemPrompt }] },
@@ -446,21 +453,28 @@
             }
         };
 
-        const diagnosePlant = async (base64Image, prompt) => {
+        // UPDATED: Accepts an array of base64 images
+        const diagnosePlant = async (base64Images, prompt) => {
             try {
                 checkApiKey(); // Check key before call
             } catch (error) {
                 return error.message;
             }
 
-            const systemPrompt = "You are the Rootsage Plant Doctor. Analyze the provided image of a plant. If a disease is detected, identify it and provide clear, actionable care instructions (how to treat it and prevent recurrence). If no disease is detected, confirm the plant is healthy and provide general care tips.";
-            const userQuery = `Diagnose the health of this plant based on the image: ${prompt}`;
+            // Construct the parts array for the Gemini API call
+            const imageParts = base64Images.map((base64) => ({
+                inlineData: { mimeType: "image/png", data: base64 }
+            }));
+
+            const systemPrompt = "You are the Rootsage Plant Doctor. Analyze the provided image(s) of a plant. Use all images for a comprehensive diagnosis. If a disease is detected, identify it and provide clear, actionable care instructions (how to treat it and prevent recurrence). If no disease is detected, confirm the plant is healthy and provide general care tips.";
+            const userQuery = `Diagnose the health of this plant based on the ${base64Images.length} images: ${prompt}`;
+            
             const payload = {
                 contents: [{
                     role: "user",
                     parts: [
                         { text: userQuery },
-                        { inlineData: { mimeType: "image/png", data: base64Image } }
+                        ...imageParts
                     ]
                 }],
                 systemInstruction: { parts: [{ text: systemPrompt }] },
@@ -526,6 +540,7 @@
         const PlusIcon = (props) => <Icon {...props} d="M12 4v16m8-8H4" />;
         const TrophyIcon = (props) => <Icon {...props} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />;
         const LoginIcon = (props) => <Icon {...props} d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1" />;
+        const TrashIcon = (props) => <Icon {...props} d="M14.745 6.002L12 11.233 9.255 6.002M12 11.233v6.767M4 7h16M16 7l-2 14H10L8 7M6 7H4M20 7h-2" />;
 
 
         // --- Preloader Component ---
@@ -662,48 +677,63 @@
             );
         };
 
-        // --- Identify Plant Component (Updated Upload Button) ---
+        // --- Identify Plant Component (Updated for Multi-Image) ---
         const IdentifyPlant = ({ identifyPlant, fileToBase64, addPlantToCollection, updateScore }) => {
-            const [file, setFile] = useState(null);
-            const [imagePreview, setImagePreview] = useState(null);
+            const MAX_IMAGES = 3;
+            const [files, setFiles] = useState([]);
+            const [imagePreviews, setImagePreviews] = useState([]);
             const [isIdentifying, setIsIdentifying] = useState(false);
             const [result, setResult] = useState(null);
             const [message, setMessage] = useState('');
-            const fileInputRef = useRef(null); // Ref for hidden input
+            const fileInputRef = useRef(null); 
 
             const handleFileChange = (e) => {
-                const selectedFile = e.target.files[0];
-                if (selectedFile) {
-                    setFile(selectedFile);
-                    // Revoke previous URL if one exists
-                    if (imagePreview) URL.revokeObjectURL(imagePreview);
-                    setImagePreview(URL.createObjectURL(selectedFile));
+                const selectedFiles = Array.from(e.target.files).slice(0, MAX_IMAGES - files.length);
+
+                if (selectedFiles.length > 0) {
+                    const newFiles = [...files, ...selectedFiles];
+                    setFiles(newFiles);
+
+                    const newPreviews = selectedFiles.map(file => URL.createObjectURL(file));
+                    setImagePreviews(prev => [...prev, ...newPreviews]);
+
                     setResult(null);
                     setMessage('');
                 }
+                // Clear the input value so the same file can be uploaded again
+                e.target.value = null; 
+            };
+            
+            const removeImage = (indexToRemove) => {
+                // Revoke object URL
+                URL.revokeObjectURL(imagePreviews[indexToRemove]);
+                
+                setFiles(files.filter((_, index) => index !== indexToRemove));
+                setImagePreviews(imagePreviews.filter((_, index) => index !== indexToRemove));
+                setResult(null);
+                setMessage('');
             };
 
             const handleIdentify = async () => {
-                if (!file) return;
+                if (files.length === 0) return;
 
                 setIsIdentifying(true);
-                setMessage('Uploading and analyzing plant...');
-                setResult(null); // Clear previous result
+                setMessage(`Analyzing ${files.length} image(s)...`);
+                setResult(null);
 
                 try {
-                    const base64Image = await fileToBase64(file);
-                    const identificationResult = await identifyPlant(base64Image);
+                    const base64Images = await Promise.all(files.map(fileToBase64));
+                    const identificationResult = await identifyPlant(base64Images);
                     setResult(identificationResult);
 
-                    // Add to collection upon successful identification
                     if (identificationResult.name !== "Identification Failed") {
+                        // Use the first image for the collection preview
                         const saveResponse = await addPlantToCollection({ 
                             name: identificationResult.name, 
                             commonName: identificationResult.name.split('(')[0].trim(),
                             analysis: identificationResult.analysis,
-                            imageUrl: imagePreview, 
                             confidence: identificationResult.confidence 
-                        });
+                        }, imagePreviews[0]); // Pass image URL
                         
                         if (saveResponse.success) {
                              await updateScore(10);
@@ -712,17 +742,14 @@
                             setMessage(`Identified! (Local save only. ${saveResponse.message})`);
                         }
                     } else {
-                        // Display the error from the analysis field if ID failed
                         setMessage(identificationResult.analysis);
                     }
 
                 } catch (error) {
-                    // Catch the API Key configuration error here
                     console.error("Identification process error:", error);
                     setMessage(`Error: ${error.message}. Please check console.`);
                 } finally {
                     setIsIdentifying(false);
-                    // Do not clear file/preview so user can re-try or see what they submitted
                 }
             };
 
@@ -733,46 +760,66 @@
                 </div>
             );
 
+            const UploadBox = () => (
+                <div 
+                    onClick={() => fileInputRef.current?.click()}
+                    className={`cursor-pointer border-4 border-dashed rounded-xl p-8 text-center transition duration-300 shadow-inner ${
+                        files.length < MAX_IMAGES ? 'border-green-400 bg-green-50 hover:bg-green-100' : 'border-gray-300 bg-gray-50'
+                    }`}
+                >
+                    <CameraIcon className="w-12 h-12 mx-auto" style={{ color: COLORS.FOREST_GREEN }} />
+                    <p className="mt-3 font-bold text-lg" style={{ color: COLORS.DARK_GREEN }}>
+                        {files.length === 0 ? "Upload Plant Image(s)" : `Add ${MAX_IMAGES - files.length} More Image(s)`}
+                    </p>
+                    <p className="text-sm text-gray-500 mt-1">
+                        Tap to select or drag & drop (Up to {MAX_IMAGES})
+                    </p>
+                    <input
+                        type="file"
+                        accept="image/*"
+                        onChange={handleFileChange}
+                        ref={fileInputRef}
+                        className="hidden" 
+                        multiple 
+                        disabled={files.length >= MAX_IMAGES}
+                    />
+                </div>
+            );
+
             return (
                 <div className="p-4 space-y-4">
                     <h2 className="text-2xl font-bold" style={{ color: COLORS.DARK_GREEN }}>Plant Identifier</h2>
+                    <p className="text-sm text-gray-600">Upload up to 3 images (close-up, leaves, stem, etc.) for better accuracy.</p>
                     
-                    <div className="bg-white p-4 rounded-xl shadow-lg border border-gray-200">
-                        <label className="block text-sm font-medium text-gray-700 mb-3">
-                            Capture or Select Image
-                        </label>
-                        
-                        {/* Hidden Input */}
-                        <input
-                            type="file"
-                            accept="image/*"
-                            onChange={handleFileChange}
-                            ref={fileInputRef}
-                            className="hidden" 
-                        />
+                    <UploadBox />
 
-                        {/* Custom Upload Button */}
-                        <button
-                            onClick={() => fileInputRef.current?.click()}
-                            className="w-full py-3 rounded-xl text-white font-bold transition duration-300 shadow-md flex items-center justify-center space-x-2 bg-green-600 hover:bg-green-700"
-                        >
-                            <CameraIcon className="w-5 h-5" />
-                            <span>{file ? 'Change Selected Image' : 'Upload Image'}</span>
-                        </button>
-                    </div>
-
-                    {imagePreview && (
-                        <div className="relative bg-white p-4 rounded-xl shadow-lg border border-gray-200">
-                            <img src={imagePreview} alt="Plant Preview" className="w-full h-48 object-cover rounded-lg mb-4 shadow-inner" />
+                    {imagePreviews.length > 0 && (
+                        <div className="bg-white p-4 rounded-xl shadow-lg border border-gray-200">
+                            <h3 className="text-sm font-medium text-gray-700 mb-3">
+                                {imagePreviews.length} Image(s) Selected
+                            </h3>
+                            <div className="grid grid-cols-3 gap-2 mb-4">
+                                {imagePreviews.map((preview, index) => (
+                                    <div key={index} className="relative group">
+                                        <img src={preview} alt={`Plant Preview ${index + 1}`} className="w-full h-24 object-cover rounded-lg shadow-inner" />
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); removeImage(index); }}
+                                            className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-full opacity-80 hover:opacity-100 transition"
+                                        >
+                                            <TrashIcon className="w-4 h-4" />
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
                             
                             <button
                                 onClick={handleIdentify}
-                                disabled={isIdentifying || !file}
+                                disabled={isIdentifying || files.length === 0}
                                 className={`w-full py-3 rounded-xl text-white font-bold transition duration-300 shadow-lg ${
                                     isIdentifying ? 'bg-gray-500 cursor-not-allowed' : 'bg-green-700 hover:bg-green-800'
                                 }`}
                             >
-                                {isIdentifying ? 'Analyzing...' : 'Identify Plant'}
+                                {isIdentifying ? 'Analyzing...' : `Identify ${files.length} Image(s)`}
                             </button>
                         </div>
                     )}
@@ -794,34 +841,47 @@
             );
         };
 
-        // --- Plant Doctor Component (Updated Upload Button) ---
+        // --- Plant Doctor Component (Updated for Multi-Image) ---
         const PlantDoctor = ({ diagnosePlant, fileToBase64 }) => {
-            const [file, setFile] = useState(null);
-            const [imagePreview, setImagePreview] = useState(null);
+            const MAX_IMAGES = 3;
+            const [files, setFiles] = useState([]);
+            const [imagePreviews, setImagePreviews] = useState([]);
             const [prompt, setPrompt] = useState("");
             const [isDiagnosing, setIsDiagnosing] = useState(false);
             const [diagnosisResult, setDiagnosisResult] = useState('');
-            const fileInputRef = useRef(null); // Ref for hidden input
+            const fileInputRef = useRef(null); 
 
             const handleFileChange = (e) => {
-                const selectedFile = e.target.files[0];
-                if (selectedFile) {
-                    setFile(selectedFile);
-                    if (imagePreview) URL.revokeObjectURL(imagePreview);
-                    setImagePreview(URL.createObjectURL(selectedFile));
+                const selectedFiles = Array.from(e.target.files).slice(0, MAX_IMAGES - files.length);
+
+                if (selectedFiles.length > 0) {
+                    const newFiles = [...files, ...selectedFiles];
+                    setFiles(newFiles);
+
+                    const newPreviews = selectedFiles.map(file => URL.createObjectURL(file));
+                    setImagePreviews(prev => [...prev, ...newPreviews]);
                     setDiagnosisResult('');
                 }
+                e.target.value = null;
+            };
+            
+            const removeImage = (indexToRemove) => {
+                URL.revokeObjectURL(imagePreviews[indexToRemove]);
+                
+                setFiles(files.filter((_, index) => index !== indexToRemove));
+                setImagePreviews(imagePreviews.filter((_, index) => index !== indexToRemove));
+                setDiagnosisResult('');
             };
 
             const handleDiagnose = async () => {
-                if (!file) return;
+                if (files.length === 0) return;
 
                 setIsDiagnosing(true);
-                setDiagnosisResult('Running in-depth diagnosis...');
+                setDiagnosisResult(`Running in-depth diagnosis based on ${files.length} images...`);
 
                 try {
-                    const base64Image = await fileToBase64(file);
-                    const resultText = await diagnosePlant(base64Image, prompt);
+                    const base64Images = await Promise.all(files.map(fileToBase64));
+                    const resultText = await diagnosePlant(base64Images, prompt);
                     setDiagnosisResult(resultText);
 
                 } catch (error) {
@@ -831,40 +891,62 @@
                     setIsDiagnosing(false);
                 }
             };
+            
+            const DoctorUploadBox = () => (
+                <div 
+                    onClick={() => fileInputRef.current?.click()}
+                    className={`cursor-pointer border-4 border-dashed rounded-xl p-8 text-center transition duration-300 shadow-inner ${
+                        files.length < MAX_IMAGES ? 'border-amber-400 bg-amber-50 hover:bg-amber-100' : 'border-gray-300 bg-gray-50'
+                    }`}
+                >
+                    <HeartIcon className="w-12 h-12 mx-auto" style={{ color: COLORS.BROWN }} />
+                    <p className="mt-3 font-bold text-lg" style={{ color: COLORS.BROWN }}>
+                        {files.length === 0 ? "Upload Symptom Image(s)" : `Add ${MAX_IMAGES - files.length} More Image(s)`}
+                    </p>
+                    <p className="text-sm text-gray-500 mt-1">
+                        Tap to select or drag & drop (Up to {MAX_IMAGES})
+                    </p>
+                    <input
+                        type="file"
+                        accept="image/*"
+                        onChange={handleFileChange}
+                        ref={fileInputRef}
+                        className="hidden"
+                        multiple
+                        disabled={files.length >= MAX_IMAGES}
+                    />
+                </div>
+            );
+
 
             return (
                 <div className="p-4 space-y-4">
                     <h2 className="text-2xl font-bold" style={{ color: COLORS.DARK_GREEN }}>Plant Doctor</h2>
-                    <p className="text-sm text-gray-600">Upload a picture of your ailing plant for a diagnosis and care plan from the Rootsage AI.</p>
+                    <p className="text-sm text-gray-600">Upload multiple images (leaves, stems, spots) for a detailed diagnosis.</p>
                     
-                    <div className="bg-white p-4 rounded-xl shadow-lg border border-gray-200 space-y-3">
-                         <label className="block text-sm font-medium text-gray-700">
-                            Capture or Select Image of Ailing Plant
-                        </label>
-                         
-                        {/* Hidden Input */}
-                        <input
-                            type="file"
-                            accept="image/*"
-                            onChange={handleFileChange}
-                            ref={fileInputRef}
-                            className="hidden"
-                        />
+                    <DoctorUploadBox />
 
-                        {/* Custom Upload Button */}
-                        <button
-                            onClick={() => fileInputRef.current?.click()}
-                            className="w-full py-3 rounded-xl text-white font-bold transition duration-300 shadow-md flex items-center justify-center space-x-2"
-                            style={{ backgroundColor: COLORS.BROWN, hover: 'bg-brown-700' }}
-                        >
-                            <HeartIcon className="w-5 h-5" />
-                            <span>{file ? 'Change Selected Image' : 'Upload Image'}</span>
-                        </button>
-                        
-                        {imagePreview && (
-                            <img src={imagePreview} alt="Ailing Plant Preview" className="w-full h-40 object-contain rounded-lg shadow-inner mt-2" />
-                        )}
-                    </div>
+                    {imagePreviews.length > 0 && (
+                        <div className="bg-white p-4 rounded-xl shadow-lg border border-gray-200">
+                            <h3 className="text-sm font-medium text-gray-700 mb-3">
+                                {imagePreviews.length} Image(s) Selected
+                            </h3>
+                            <div className="grid grid-cols-3 gap-2 mb-4">
+                                {imagePreviews.map((preview, index) => (
+                                    <div key={index} className="relative group">
+                                        <img src={preview} alt={`Ailing Plant Preview ${index + 1}`} className="w-full h-24 object-cover rounded-lg shadow-inner" />
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); removeImage(index); }}
+                                            className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-full opacity-80 hover:opacity-100 transition"
+                                        >
+                                            <TrashIcon className="w-4 h-4" />
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
 
                     <div className="bg-white p-4 rounded-xl shadow-lg border border-gray-200">
                         <label htmlFor="prompt" className="block text-sm font-medium text-gray-700">
@@ -881,13 +963,13 @@
                         />
                         <button
                             onClick={handleDiagnose}
-                            disabled={isDiagnosing || !file}
+                            disabled={isDiagnosing || files.length === 0}
                             className={`mt-3 w-full py-3 rounded-xl text-white font-bold transition duration-300 shadow-md ${
                                 isDiagnosing ? 'bg-gray-500 cursor-not-allowed' : 'bg-brown-600 hover:bg-brown-700'
                             }`}
                             style={{ backgroundColor: isDiagnosing ? 'rgb(107 114 128)' : COLORS.BROWN }}
                         >
-                            {isDiagnosing ? 'Running Diagnosis...' : 'Get Diagnosis'}
+                            {isDiagnosing ? 'Running Diagnosis...' : `Get Diagnosis for ${files.length} Image(s)`}
                         </button>
                     </div>
 
