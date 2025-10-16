@@ -54,10 +54,24 @@
             doc, setDoc, onSnapshot, collection, query, addDoc, getDoc, updateDoc, deleteDoc } = window.firebase || {};
 
         // --- Configuration Variables (Provided by Canvas Environment) ---
+        // NOTE: The firebaseConfig object itself is now used to construct a secure config with appId
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const rawFirebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-        const API_KEY = ""; // Gemini API Key
+        
+        // API Key is left blank, as it is dynamically provided by the Canvas environment during fetch.
+        const API_KEY = ""; 
+
+        // Construct the secure Firebase config using the user's provided structure
+        const SECURE_FIREBASE_CONFIG = {
+            apiKey: rawFirebaseConfig.apiKey || "API_KEY_PLACEHOLDER", // Use the apiKey from the config object
+            authDomain: `${appId}.firebaseapp.com`,
+            projectId: appId,
+            storageBucket: `${appId}.appspot.com`,
+            messagingSenderId: rawFirebaseConfig.messagingSenderId || "MESSAGING_SENDER_ID_PLACEHOLDER",
+            appId: rawFirebaseConfig.appId || "APP_ID_PLACEHOLDER"
+        };
+
 
         // --- Custom Theme/Styles (Using Hex for consistency with user request) ---
         const COLORS = {
@@ -77,7 +91,7 @@
             });
         };
 
-        // --- API Calls (Mocked or real, but contained within this file) ---
+        // --- API Calls (Contained within this file) ---
 
         const generateRecipes = async (plantName) => {
             const systemPrompt = `Act as a culinary expert. Generate 3 creative and simple recipes suitable for a home cook using the ingredient: ${plantName}. The response must be a valid JSON array matching the provided schema.`;
@@ -121,6 +135,75 @@
             } catch (error) {
                 console.error("Gemini Recipe API Error:", error);
                 return [];
+            }
+        };
+
+        const identifyPlant = async (base64Image) => {
+            const systemPrompt = `You are the Rootsage Identification Bot. Your task is to analyze the provided image of a plant and return the single most likely identification in a specific JSON format. Do not include any other text or explanation.
+
+            JSON Schema required:
+            {
+                "name": "Most likely common and scientific name (e.g., Common Dandelion (Taraxacum officinale))",
+                "confidence": "Confidence percentage as a string (e.g., '95%')",
+                "analysis": "A concise analysis of the plant, including edibility status (Edible, Non-edible, or Caution required) and key identification markers.",
+                "funFact": "One short, interesting fact about the identified plant."
+            }
+            
+            Return ONLY the JSON object.`;
+            
+            const userQuery = "Identify this plant, its edibility, caution level, and provide a fun fact.";
+            
+            const payload = {
+                contents: [{
+                    role: "user",
+                    parts: [
+                        { text: userQuery },
+                        { inlineData: { mimeType: "image/png", data: base64Image } }
+                    ]
+                }],
+                systemInstruction: { parts: [{ text: systemPrompt }] },
+                generationConfig: {
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: "OBJECT",
+                        properties: {
+                            name: { type: "STRING" },
+                            confidence: { type: "STRING" },
+                            analysis: { type: "STRING" },
+                            funFact: { type: "STRING" }
+                        },
+                        propertyOrdering: ["name", "confidence", "analysis", "funFact"]
+                    }
+                }
+            };
+
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${API_KEY}`;
+
+            try {
+                for (let i = 0; i < 3; i++) {
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    
+                    if (response.ok) {
+                        const result = await response.json();
+                        const jsonText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+                        if (jsonText) return JSON.parse(jsonText);
+                    }
+                    if (i < 2) await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, i)));
+                }
+                throw new Error('Identification failed after multiple retries.');
+            } catch (error) {
+                console.error("Gemini Identification API Error:", error);
+                // Return a failure structure consistent with the schema
+                return {
+                    name: "Identification Failed",
+                    confidence: "0%",
+                    analysis: "Could not identify the plant. Please ensure the image is clear and well-lit.",
+                    funFact: "Try taking the picture from a different angle!"
+                };
             }
         };
 
@@ -169,14 +252,15 @@
         };
 
         const getBadgeTier = (count) => {
-            if (count > 15) return { name: "Master Botanist", color: "bg-amber-500", icon: "🌱", nextTier: 16 };
-            if (count > 5) return { name: "Green Thumb Apprentice", color: "bg-green-600", icon: "🌿", nextTier: 16 };
-            return { name: "Novice Gardener", color: "bg-gray-500", icon: "✨", nextTier: 6 };
+            if (count >= 15) return { name: "Master Botanist", color: "bg-amber-500", icon: "🌱", nextTier: 15 };
+            if (count >= 5) return { name: "Green Thumb Apprentice", color: "bg-green-600", icon: "🌿", nextTier: 15 };
+            return { name: "Novice Gardener", color: "bg-gray-500", icon: "✨", nextTier: 5 };
         };
 
         const MOCK_SEASONAL_QUESTS = [
+            // Updated to use consistent 'requiredCollectible' for accurate completion check
             { id: 'q1', name: 'Spring Quest: Harvest Ramps (Wild Leeks)', isSeasonal: true, requiredCollectible: 'Wild Leek', status: 'In Progress', caution: true, badge: '🧄' },
-            { id: 'q2', name: 'Summer Quest: Spruce Tip Sugar', isSeasonal: true, requiredCollectible: 'Spruce Tip', status: 'Completed', caution: false, badge: '🌲🍯' },
+            { id: 'q2', name: 'Summer Quest: Spruce Tip Sugar', isSeasonal: true, requiredCollectible: 'Spruce Tip', status: 'In Progress', caution: false, badge: '🌲🍯' },
             { id: 'q3', name: 'Autumn Quest: Identify Edible Mushrooms', isSeasonal: true, requiredCollectible: 'Mushroom', status: 'Locked', caution: true, badge: '🍄' },
             { id: 'q4', name: 'Year-Round: Identify 10 Different Fungi', isSeasonal: false, requiredCollectible: 'Fungi', status: 'In Progress', caution: false, badge: '🦠' },
         ];
@@ -350,43 +434,43 @@
         // --- Page Components (Themed) ---
 
         const IdentifyPlant = ({ userId, db, addCollectible, setCurrentPage }) => {
-            const [imageFile, setImageFile] = useState(null);
+            const [imageFileUrl, setImageFileUrl] = useState(null);
+            const [base64Image, setBase64Image] = useState(null);
             const [analysis, setAnalysis] = useState(null);
             const [isLoading, setIsLoading] = useState(false);
             const [error, setError] = useState(null);
 
-            const mockPlantAnalysis = (file) => {
-                setIsLoading(true);
-                setError(null);
-                setAnalysis(null);
-
-                const mockData = [
-                    { name: "Common Dandelion (Taraxacum officinale)", confidence: "98%", analysis: "A perennial plant. Parts are edible (leaves, flowers, roots), but can be mistaken for toxic species. Edible parts: Flowers (raw/cooked), Leaves (young, raw)." },
-                    { name: "Wild Lettuce (Lactuca virosa)", confidence: "75%", analysis: "Contains bitter sap. Caution: Can be mistaken for other wild lactucas. Edible parts: Young leaves (cooked, bitter), Sap (medicinal uses only)." },
-                    { name: "Broadleaf Plantain (Plantago major)", confidence: "55%", analysis: "Very common weed. Highly edible and versatile. Edible parts: Young leaves (raw or cooked), Seeds (ground into flour)." }
-                ];
-
-                const funFacts = [
-                    "The Dandelion flower closes at night and on cloudy days.",
-                    "Some types of lettuce were used by the ancient Egyptians.",
-                    "Plantain leaves can be chewed and applied to insect bites to soothe irritation."
-                ];
-
-                setTimeout(() => {
-                    setAnalysis({
-                        image: URL.createObjectURL(file),
-                        results: mockData.slice(0, 3),
-                        funFact: funFacts[Math.floor(Math.random() * funFacts.length)]
-                    });
-                    setIsLoading(false);
-                }, 2000);
-            };
-
-            const handleFileChange = (e) => {
+            const handleFileChange = async (e) => {
                 const file = e.target.files[0];
                 if (file) {
-                    setImageFile(file);
-                    mockPlantAnalysis(file);
+                    setIsLoading(true);
+                    setError(null);
+                    setAnalysis(null);
+                    
+                    setImageFileUrl(URL.createObjectURL(file));
+                    
+                    try {
+                        const base64 = await fileToBase64(file);
+                        setBase64Image(base64);
+                        
+                        // Call the real Gemini API for identification
+                        const result = await identifyPlant(base64);
+                        
+                        setAnalysis({
+                            image: URL.createObjectURL(file),
+                            name: result.name,
+                            confidence: result.confidence,
+                            analysis: result.analysis,
+                            funFact: result.funFact
+                        });
+
+                    } catch(e) {
+                        setError("Failed to process image or connect to the identifier.");
+                        console.error(e);
+                        setAnalysis(null);
+                    } finally {
+                        setIsLoading(false);
+                    }
                 }
             };
 
@@ -394,31 +478,26 @@
                 if (!analysis || !db || !userId) return;
 
                 addCollectible({
-                    name: analysis.results[0].name,
-                    description: analysis.results[0].analysis,
+                    name: analysis.name,
+                    description: analysis.analysis,
                     dateIdentified: new Date().toISOString(),
                     imageUrl: analysis.image
                 });
 
                 setAnalysis(null);
-                setImageFile(null);
-                console.log('Plant added to your collectibles! Check out the Quests tab.');
+                setImageFileUrl(null);
+                setBase64Image(null);
+                document.getElementById('file-input').value = '';
+                console.log('Plant added to your collectibles!');
+                setCurrentPage('collectibles'); // Navigate to collectibles to show success
             };
 
             const handleRetry = () => {
                 setAnalysis(null);
-                setImageFile(null);
+                setImageFileUrl(null);
+                setBase64Image(null);
                 document.getElementById('file-input').value = '';
             };
-
-            const AnalysisResult = ({ name, confidence, analysis }) => (
-                <div className="p-3 bg-gray-50 rounded-lg shadow-inner mb-2 border-l-4 border-green-300">
-                    <p className="font-semibold text-gray-800">
-                        {name} <span className="text-xs ml-2" style={{ color: COLORS.FOREST_GREEN }}>({confidence} Match)</span>
-                    </p>
-                    <p className="text-sm text-gray-600 mt-1">{analysis}</p>
-                </div>
-            );
 
             return (
                 <div className="p-5" style={{ backgroundColor: COLORS.SAND }}>
@@ -459,12 +538,13 @@
                                 </button>
                             </div>
                             
-                            <h3 className="text-xl font-bold mb-3" style={{ color: COLORS.FOREST_GREEN }}>Top 3 Potential Matches</h3>
+                            <h3 className="text-xl font-bold mb-3" style={{ color: COLORS.FOREST_GREEN }}>Top Identification</h3>
                             
-                            <div className="space-y-2">
-                                {analysis.results.map((res, index) => (
-                                    <AnalysisResult key={index} {...res} />
-                                ))}
+                            <div className="p-3 bg-gray-50 rounded-lg shadow-inner mb-2 border-l-4 border-green-300">
+                                <p className="font-semibold text-gray-800">
+                                    {analysis.name} <span className="text-xs ml-2" style={{ color: COLORS.FOREST_GREEN }}>({analysis.confidence} Match)</span>
+                                </p>
+                                <p className="text-sm text-gray-600 mt-1">{analysis.analysis}</p>
                             </div>
 
                             <div className="mt-4 p-3 rounded-lg border-l-4 border-yellow-400" style={{ backgroundColor: '#FFFBEB' }}>
@@ -479,13 +559,15 @@
                                 >
                                     Retry
                                 </button>
-                                <button
-                                    onClick={handleAddToCollectibles}
-                                    className="flex-1 px-4 py-3 text-white font-semibold rounded-xl shadow-md shadow-green-500/50 hover:bg-green-700 transition duration-150"
-                                    style={{ backgroundColor: COLORS.FOREST_GREEN }}
-                                >
-                                    Add to Collectibles
-                                </button>
+                                {analysis.name !== "Identification Failed" && (
+                                    <button
+                                        onClick={handleAddToCollectibles}
+                                        className="flex-1 px-4 py-3 text-white font-semibold rounded-xl shadow-md shadow-green-500/50 hover:bg-green-700 transition duration-150"
+                                        style={{ backgroundColor: COLORS.FOREST_GREEN }}
+                                    >
+                                        Add to Collectibles
+                                    </button>
+                                )}
                             </div>
                         </div>
                     )}
@@ -515,6 +597,7 @@
             }, []);
 
             useEffect(() => {
+                // If a plant is selected and we haven't fetched recipes for it yet
                 if (selectedPlant && !recipes) {
                     handleGenerateRecipes(selectedPlant.name);
                 }
@@ -680,33 +763,53 @@
 
         const Quests = ({ collectibles }) => {
             
-            // Check if the user has collected the required item for a quest (mock logic)
-            const isQuestCompleted = (requiredCollectible) => {
+            // Function to check if the user has collected the required item for a quest (case-insensitive check)
+            const isQuestCollected = (requiredCollectible) => {
                 if (!requiredCollectible) return false;
-                // Simple mock check: if the name contains the required keyword, it's 'collected'
-                return collectibles.some(c => c.name.toLowerCase().includes(requiredCollectible.toLowerCase()));
+                const required = requiredCollectible.toLowerCase();
+                return collectibles.some(c => c.name.toLowerCase().includes(required));
             };
+            
+            // Function to check if a specific number of unique items of a category are collected
+            const isCategoryQuestCompleted = (category, count) => {
+                if (category === 'Fungi') {
+                    // MOCK LOGIC for Fungi count: checks if at least 10 unique items have 'mushroom' or 'fungi' in their name
+                    const fungiCount = collectibles.filter(c => 
+                        c.name.toLowerCase().includes('mushroom') || 
+                        c.name.toLowerCase().includes('fungi')
+                    ).length;
+                    return fungiCount >= count;
+                }
+                return false;
+            };
+
 
             const allQuests = MOCK_SEASONAL_QUESTS.map(quest => {
                 let status = quest.status;
                 let badgeEarned = false;
 
-                if (quest.status === 'Completed') {
-                    badgeEarned = true;
-                } else if (isQuestCompleted(quest.requiredCollectible)) {
-                    status = 'Completed';
-                    badgeEarned = true;
-                } else if (quest.status === 'Locked') {
-                    // Keep locked
-                } else {
-                    status = 'In Progress';
+                // Handle Year-Round Quest for 10 Fungi
+                if (quest.id === 'q4') {
+                    if (isCategoryQuestCompleted('Fungi', 10)) {
+                         status = 'Completed';
+                         badgeEarned = true;
+                    }
+                } 
+                // Handle Seasonal Quests (check for required collectible)
+                else if (quest.requiredCollectible) {
+                    if (isQuestCollected(quest.requiredCollectible)) {
+                        status = 'Completed';
+                        badgeEarned = true;
+                    }
                 }
 
                 return { ...quest, status, badgeEarned };
             });
 
             const QuestCard = ({ quest }) => (
-                <div className="bg-white p-4 rounded-xl shadow-md border-l-4 flex flex-col">
+                <div className="bg-white p-4 rounded-xl shadow-md border-l-4 flex flex-col" 
+                    style={{ borderColor: quest.badgeEarned ? COLORS.FOREST_GREEN : (quest.caution ? 'rgb(251 191 36)' : 'rgb(209 213 219)') }}
+                >
                     <div className="flex justify-between items-start mb-2">
                         <h4 className="font-bold text-lg" style={{ color: COLORS.DARK_GREEN }}>
                             {quest.name}
@@ -721,7 +824,7 @@
                         }`}>
                             {quest.status} {quest.caution && '(High Caution)'}
                         </span>
-                        {!quest.badgeEarned && <span className="text-gray-500 italic">Collect: {quest.requiredCollectible}</span>}
+                        {!quest.badgeEarned && quest.status !== 'Locked' && <span className="text-gray-500 italic">Collect: {quest.requiredCollectible}</span>}
                     </div>
                 </div>
             );
@@ -739,12 +842,16 @@
 
                     <h3 className="text-xl font-bold mt-8 mb-4 border-b pb-1" style={{ color: COLORS.FOREST_GREEN }}>My Badges</h3>
                     <div className="flex flex-wrap gap-3">
-                        {allQuests.filter(q => q.badgeEarned).map(q => (
-                            <div key={q.id} className="text-center p-3 rounded-xl shadow-lg bg-white border border-gray-100">
-                                <span className="text-3xl block">{q.badge}</span>
-                                <p className="text-xs text-gray-600 mt-1">{q.name.split(':')[1] || 'Badge'}</p>
-                            </div>
-                        ))}
+                        {allQuests.filter(q => q.badgeEarned).length === 0 ? (
+                            <p className="text-gray-500 italic">No badges earned yet. Complete a quest!</p>
+                        ) : (
+                            allQuests.filter(q => q.badgeEarned).map(q => (
+                                <div key={q.id} className="text-center p-3 rounded-xl shadow-lg bg-white border border-gray-100">
+                                    <span className="text-3xl block">{q.badge}</span>
+                                    <p className="text-xs text-gray-600 mt-1">{q.name.split(':')[1] || 'Badge'}</p>
+                                </div>
+                            ))
+                        )}
                     </div>
                 </div>
             );
@@ -806,7 +913,9 @@
                     <div className={`mt-6 p-5 rounded-xl shadow-lg text-white text-center ${badge.color}`}>
                         <p className="text-2xl font-extrabold">{badge.icon} {badge.name}</p>
                         <p className="text-sm mt-1">Identified {profile.collectibleCount} plants.</p>
-                        <p className="text-xs mt-2">Identify {badge.nextTier - profile.collectibleCount} more to reach the next tier!</p>
+                        {badge.name !== "Master Botanist" && (
+                             <p className="text-xs mt-2">Identify {badge.nextTier - profile.collectibleCount} more to reach the next tier!</p>
+                        )}
                     </div>
                 </div>
             );
@@ -902,7 +1011,8 @@
                 if (!hasAgreed || !initializeApp) return;
 
                 try {
-                    const app = initializeApp(firebaseConfig);
+                    // Use the SECURE_FIREBASE_CONFIG
+                    const app = initializeApp(SECURE_FIREBASE_CONFIG);
                     const firestore = getFirestore(app);
                     const firebaseAuth = getAuth(app);
                     setDb(firestore);
@@ -957,6 +1067,7 @@
                         const data = docSnapshot.data();
                         setProfileData(prev => ({ ...prev, ...data, collectibleCount: collectibles.length }));
                     } else {
+                        // Create the default profile if it doesn't exist
                         setDoc(getProfileDoc(), defaultProfile, { merge: true }).catch(e => console.error("Error creating profile:", e));
                         setProfileData(prev => ({ ...prev, ...defaultProfile, collectibleCount: collectibles.length }));
                     }
@@ -975,6 +1086,7 @@
                 setProfileData(prev => ({ ...prev, collectibleCount: collectibles.length }));
                 if (db && userId) {
                     const profileDocRef = doc(db, `artifacts/${appId}/users/${userId}/profile`, 'data');
+                    // Update only the count field
                     updateDoc(profileDocRef, { collectibleCount: collectibles.length }).catch(e => console.error("Error updating count:", e));
                 }
             }, [collectibles.length, db, userId]);
@@ -1027,7 +1139,8 @@
             const badge = useMemo(() => {
                 const count = collectibles.length;
                 const tier = getBadgeTier(count);
-                tier.nextTier = tier.name === "Master Botanist" ? count : tier.name === "Green Thumb Apprentice" ? 16 : 6;
+                // Calculate nextTier based on the tier limits
+                tier.nextTier = tier.name === "Master Botanist" ? count : tier.name === "Green Thumb Apprentice" ? 15 : 5;
                 return tier;
             }, [collectibles.length]);
 
