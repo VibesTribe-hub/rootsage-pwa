@@ -49,30 +49,18 @@
         const { useState, useEffect, useMemo, useCallback } = React;
         const ReactDOM = window.ReactDOM;
 
-        // --- Firebase Globals (Accessed via window.firebase from the module script) ---
-        const { initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, getFirestore,
-            doc, setDoc, onSnapshot, collection, query, addDoc, getDoc, updateDoc, deleteDoc } = window.firebase || {};
-
-        // --- Configuration Variables (Provided by Canvas Environment) ---
-        // NOTE: The firebaseConfig object itself is now used to construct a secure config with appId
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const rawFirebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-        
-        // API Key is left blank, as it is dynamically provided by the Canvas environment during fetch.
-        const API_KEY = ""; 
-
-        // Construct the secure Firebase config using the user's provided structure
+        // --- SECURITY FIX: Use Placeholder for GitHub Actions Injection ---
+        // The GitHub Action (deploy.yml) will replace $$FIREBASE_API_KEY$$ with the secret value during build.
         const SECURE_FIREBASE_CONFIG = {
-            apiKey: rawFirebaseConfig.apiKey || "API_KEY_PLACEHOLDER", // Use the apiKey from the config object
-            authDomain: `${appId}.firebaseapp.com`,
-            projectId: appId,
-            storageBucket: `${appId}.appspot.com`,
-            messagingSenderId: rawFirebaseConfig.messagingSenderId || "MESSAGING_SENDER_ID_PLACEHOLDER",
-            appId: rawFirebaseConfig.appId || "APP_ID_PLACEHOLDER"
+            apiKey: "$$FIREBASE_API_KEY$$",
+            authDomain: "rootsagev2.firebaseapp.com",
+            projectId: "rootsagev2",
+            storageBucket: "rootsagev2.firebasestorage.app",
+            messagingSenderId: "355755573557",
+            appId: "1:355755573557:web:5e23d0587264097934cc7c"
         };
-
-
+        // ------------------------------------------------------------------
+       
         // --- Custom Theme/Styles (Using Hex for consistency with user request) ---
         const COLORS = {
             SAND: '#FBF3D4',
